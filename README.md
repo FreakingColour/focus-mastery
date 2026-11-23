@@ -40,6 +40,9 @@ Alternativa: GitHub Pages (sube la carpeta a un repo y activa Pages).
 - **Acceso**: email + contraseña (mínimo 8 caracteres). Al crear la cuenta llega un email de confirmación. También se puede entrar con un enlace por email, recuperar la contraseña olvidada y cambiarla desde Hoy → Tu perfil. Los enlaces de los emails hay que abrirlos en el mismo navegador donde se pidieron.
 - Para exigir contraseñas más fuertes: Supabase → Authentication → Providers → Email → *Minimum password length* / *Password requirements*.
 
+## Al publicar cambios
+Sube el número `?v=` en `index.html` (styles.css y app.js) y en los `import` de `app.js`, para que los navegadores no usen la versión antigua guardada.
+
 ## Archivos
 - `index.html`: estructura de la página
 - `styles.css`: diseño

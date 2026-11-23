@@ -1,6 +1,6 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
-import { STRINGS } from "./i18n.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=7";
+import { STRINGS } from "./i18n.js?v=7";
 
 /* =========================================================
    Idioma
