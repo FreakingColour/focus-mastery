@@ -1,6 +1,6 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=9";
-import { STRINGS } from "./i18n.js?v=9";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=10";
+import { STRINGS } from "./i18n.js?v=10";
 
 /* =========================================================
    Idioma
@@ -29,6 +29,7 @@ setLang(lang);
    ========================================================= */
 const WEEK_TARGET = 15, DAY_MIN = 8, DAY_MAX = 12, WORK_MIN = 25, BREAK_MIN = 5, MIN_BUDDIES = 3;
 const EMOJIS = ["✅", "💪", "🔥", "👏", "🍅", "🫂"];
+const DKINDS = [["phone", "📱"], ["people", "🗣️"], ["side", "🧩"], ["social", "📲"], ["thoughts", "💭"], ["other", "❓"]];
 
 const $ = s => document.querySelector(s);
 const app = $("#app");
@@ -82,7 +83,7 @@ function armDelete(b, label, onConfirm) {
 const configured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { flowType: "pkce", persistSession: true, detectSessionInUrl: true } }) : null;
 
-const S = { session: null, me: null, rt: 0, title: "Focus Mastery", gScope: "day", goals: [], tasks: [], todayRow: null, jDate: today(), pendingIn: 0 };
+const S = { session: null, me: null, rt: 0, title: "Focus Mastery", gScope: "day", goals: [], tasks: [], todayRow: null, jDate: today(), pendingIn: 0, pcache: {}, rWeek: dkey(mondayOf(new Date())) };
 const myId = () => S.session?.user?.id || null;
 
 async function loadMe() {
@@ -97,6 +98,10 @@ async function profilesByIds(ids) {
   const { data } = await sb.from("profiles").select("id,username,display_name,bio,start_time").in("id", uniq);
   return Object.fromEntries((data || []).map(p => [p.id, p]));
 }
+async function ensureProfiles(ids) {
+  const miss = [...new Set(ids)].filter(i => i && !S.pcache[i]);
+  if (miss.length) Object.assign(S.pcache, await profilesByIds(miss));
+}
 async function refreshPendingBadge() {
   if (!myId()) return;
   const { count } = await sb.from("buddies").select("id", { count: "exact", head: true }).eq("addressee", myId()).eq("status", "pending");
@@ -107,13 +112,14 @@ async function refreshPendingBadge() {
 /* =========================================================
    Router
    ========================================================= */
-const NEEDS_LOGIN = ["hoy", "tablero", "diario", "buddies", "yo", "bienvenida", "contrasena"];
+const NEEDS_LOGIN = ["hoy", "tablero", "diario", "buddies", "sala", "yo", "bienvenida", "contrasena"];
 function parseRoute() {
   const [view = "", arg = ""] = location.hash.replace(/^#\/?/, "").split("/");
   return { view, arg: decodeURIComponent(arg) };
 }
 async function route() {
   const rt = ++S.rt;
+  leaveRoom();
   if (!configured) return viewSetup();
   const { view, arg } = parseRoute();
   if (NEEDS_LOGIN.includes(view) && !S.session) { location.hash = "#/"; return; }
@@ -130,6 +136,7 @@ async function route() {
     case "tablero": return viewBoard(rt);
     case "diario": return viewJournal(rt);
     case "buddies": return viewBuddies(rt);
+    case "sala": return viewRoom(rt, arg || "general");
     case "yo": location.hash = profileLink(S.me); return;
     case "u": return viewProfile(rt, arg.toLowerCase());
     default: location.hash = "#/";
@@ -151,6 +158,7 @@ function renderNav(view) {
       item("hoy", t("navToday"), true) + item("tablero", t("navBoard"), true) + item("diario", t("navJournal"), true) +
       item("yo", t("navProfile")) +
       `<a href="#/buddies" ${view === "buddies" ? 'aria-current="page"' : ""}>${t("navBuddies")} <span class="badge" id="navBadge" ${S.pendingIn ? "" : "hidden"}>${S.pendingIn}</span></a>` +
+      `<a href="#/sala" ${view === "sala" ? 'aria-current="page"' : ""}>${t("navRooms")}</a>` +
       `<button type="button" id="logout">${t("navLogout")}</button>` + langBtn;
   }
   $("#logout")?.addEventListener("click", async () => { await sb.auth.signOut(); location.hash = "#/"; });
@@ -464,16 +472,28 @@ async function viewBuddies(rt) {
   const incoming = all.filter(r => r.status === "pending" && r.addressee === me);
   const outgoing = all.filter(r => r.status === "pending" && r.requester === me);
   const buddyIds = accepted.map(other);
-  const [people, daysR, acksR] = await Promise.all([
+  const since = dkey(addDays(new Date(), -90));
+  const [people, daysR, acksR, nudgeR] = await Promise.all([
     profilesByIds(all.map(other)),
     buddyIds.length ? sb.from("days").select("*").in("user_id", buddyIds).gte("day", monday) : Promise.resolve({ data: [] }),
-    sb.from("check_acks").select("*").eq("day", tk).or(`from_user.eq.${me},to_user.eq.${me}`),
+    sb.from("check_acks").select("*").gte("day", since).or(`from_user.eq.${me},to_user.eq.${me}`),
+    sb.from("nudges").select("to_user").eq("day", tk).eq("from_user", me),
   ]);
   if (!alive(rt)) return;
   S.pendingIn = incoming.length;
   const badge = $("#navBadge"); if (badge) { badge.hidden = !incoming.length; badge.textContent = incoming.length; }
   const daysBy = {}; for (const d of daysR.data || []) (daysBy[d.user_id] ||= {})[d.day] = d;
-  const acks = acksR.data || [];
+  const acksAll = acksR.data || [], acks = acksAll.filter(a => a.day === tk);
+  const nudged = new Set((nudgeR.data || []).map(n => n.to_user));
+  // Racha compartida: días seguidos en los que os habéis hecho el check las dos personas
+  const pairStreak = id => {
+    const out = new Set(), inn = new Set();
+    for (const a of acksAll) { if (a.from_user === me && a.to_user === id) out.add(a.day); else if (a.from_user === id && a.to_user === me) inn.add(a.day); }
+    const both = k => out.has(k) && inn.has(k);
+    let d = both(tk) ? new Date() : addDays(new Date(), -1), n = 0;
+    while (both(dkey(d))) { n++; d = addDays(d, -1); }
+    return n;
+  };
   const given = Object.fromEntries(acks.filter(a => a.from_user === me).map(a => [a.to_user, a.emoji]));
   const received = acks.filter(a => a.to_user === me);
   const nb = buddyIds.length, checkedCount = buddyIds.filter(id => given[id]).length;
@@ -489,11 +509,14 @@ async function viewBuddies(rt) {
   const card = id => {
     const q = people[id]; if (!q) return "";
     const d = daysBy[id] || {}, td = d[tk] || {};
-    const wk = weekTotal(d), mine = given[id];
+    const wk = weekTotal(d), mine = given[id], ps = pairStreak(id);
     return `<article class="bcard ${mine ? "" : "todo"}">
-      <div class="who">${avatar(q, "sm")}<div style="min-width:0"><a href="${profileLink(q)}">${esc(q.display_name)}</a><div class="handle muted" style="font-size:12px">@${esc(q.username)}</div></div></div>
+      <div class="who">${avatar(q, "sm")}<div style="min-width:0;flex:1"><a href="${profileLink(q)}">${esc(q.display_name)}</a><div class="handle muted" style="font-size:12px">@${esc(q.username)}</div></div>
+        ${ps ? `<span class="pill ok" title="${t("pairStreakTitle")}">🔥 ${t("pairStreak", { n: ps })}</span>` : ""}</div>
       <div class="nums"><span><strong class="num">${td.pomos || 0}</strong>${t("cardToday")}</span><span><strong class="num">${wk}</strong>${t("cardWeek", { n: WEEK_TARGET })}</span><span>${goalPill(td)}</span></div>
-      ${td.checked_in ? (td.note ? `<p class="checkin-note" style="font-size:14px">${esc(td.note)}</p>` : `<p class="muted" style="margin:0">${t("checkinNoNote")}</p>`) : `<p class="muted" style="margin:0">${t("noCheckinYet")}</p>`}
+      ${td.checked_in ? (td.note ? `<p class="checkin-note" style="font-size:14px">${esc(td.note)}</p>` : `<p class="muted" style="margin:0">${t("checkinNoNote")}</p>`)
+        : `<div class="row between"><p class="muted" style="margin:0">${t("noCheckinYet")}</p>
+           <button type="button" class="btn small" data-nudge="${id}" ${nudged.has(id) ? "disabled" : ""}>${nudged.has(id) ? t("nudgeSent") : t("nudge")}</button></div>`}
       <div><div class="label" style="margin-bottom:6px">${mine ? t("youAcked") : t("giveAck")}</div>
         <div class="emojis" data-to="${id}">${EMOJIS.map(e => `<button type="button" aria-pressed="${mine === e}" data-emoji="${e}" aria-label="${t("ackWith", { e })}">${e}</button>`).join("")}</div></div>
     </article>`;
@@ -522,6 +545,13 @@ async function viewBuddies(rt) {
     const b = e.target.closest("button"); if (!b) return;
     const { error } = await sb.from("check_acks").upsert({ day: tk, from_user: me, to_user: box.dataset.to, emoji: b.dataset.emoji }, { onConflict: "day,from_user,to_user" });
     if (!failed(error)) route();
+  }));
+  app.querySelectorAll("[data-nudge]").forEach(b => b.addEventListener("click", async () => {
+    const id = b.dataset.nudge;
+    const { error } = await sb.from("nudges").insert({ day: tk, to_user: id });
+    if (error && error.code !== "23505") { failed(error, t("needSql")); return; }
+    b.disabled = true; b.textContent = t("nudgeSent");
+    toast(t("nudgeToast", { n: people[id]?.display_name || "" }));
   }));
   app.querySelectorAll("[data-accept]").forEach(b => b.addEventListener("click", async () => {
     const { error } = await sb.from("buddies").update({ status: "accepted" }).eq("id", b.dataset.accept);
@@ -564,7 +594,7 @@ async function syncTodayGoals() {
 /* =========================================================
    Temporizador (funciona en cualquier vista)
    ========================================================= */
-const timer = Object.assign({ mode: "work", running: false, endAt: 0, remaining: WORK_MIN * 60e3, taskId: "" }, ls.get("fm-timer") || {});
+const timer = Object.assign({ mode: "work", running: false, endAt: 0, remaining: WORK_MIN * 60e3, taskId: "", room: "" }, ls.get("fm-timer") || {});
 const saveTimer = () => ls.set("fm-timer", timer);
 const fullMs = () => (timer.mode === "work" ? WORK_MIN : BREAK_MIN) * 60e3;
 const leftMs = () => (timer.running ? Math.max(0, timer.endAt - Date.now()) : timer.remaining);
@@ -583,8 +613,11 @@ function beep() {
 let finishing = false;
 async function finish() {
   if (finishing) return; finishing = true;
-  const wasWork = timer.mode === "work", startedAt = new Date(timer.endAt - WORK_MIN * 60e3);
-  timer.running = false; timer.mode = wasWork ? "break" : "work"; timer.remaining = fullMs(); saveTimer(); beep();
+  const wasWork = timer.mode === "work", startedAt = new Date(timer.endAt - WORK_MIN * 60e3), prevEnd = timer.endAt;
+  timer.running = false; timer.mode = wasWork ? "break" : "work"; timer.remaining = fullMs();
+  // En una sala, el descanso empieza solo y a la vez para todos
+  if (wasWork && timer.room) { timer.running = true; timer.endAt = prevEnd + BREAK_MIN * 60e3; } else timer.room = "";
+  saveTimer(); beep();
   if (wasWork && S.me) {
     const { error } = await sb.rpc("add_pomodoro", { p_day: dkey(startedAt), p_first_at: `${pad(startedAt.getHours())}:${pad(startedAt.getMinutes())}` });
     if (!failed(error, t("errPomo"))) {
@@ -605,37 +638,224 @@ function renderTimer() {
   document.title = timer.running ? `${txt} · ${timer.mode === "work" ? t("focus") : t("break")}` : S.title;
   if (!clock) return;
   clock.textContent = txt;
+  const rx = $("#relax"); if (rx) rx.hidden = timer.mode !== "break";
   $("#tMode").textContent = timer.mode === "work" ? t("focus") : t("break");
   $("#timer").classList.toggle("brk", timer.mode !== "work");
   $("#ringPrg").style.strokeDashoffset = (276.46 * (1 - ms / fullMs())).toFixed(2);
   $("#tStart").textContent = timer.running ? t("pause") : ms < fullMs() ? t("resume") : timer.mode === "work" ? t("start") : t("startBreak");
 }
 setInterval(() => {
+  if (room) renderRoom();
   if (!timer.running) return;
   if (Date.now() >= timer.endAt) { if (S.me || !S.session) finish(); }
   else renderTimer();
 }, 500);
 
 /* =========================================================
+   Salas de foco: pomodoro compartido, quién está y chat
+   'general' = todo el mundo con cuenta; <id> = sala de esa persona y sus buddies
+   ========================================================= */
+let room = null;
+function leaveRoom() { if (room?.ch) sb.removeChannel(room.ch); room = null; }
+function roomPhase(st) {
+  if (!st || st.mode !== "work" || !st.ends_at) return { ph: "idle" };
+  const end = Date.parse(st.ends_at), now = Date.now();
+  if (now < end) return { ph: "work", left: end - now, full: WORK_MIN * 60e3 };
+  if (now < end + BREAK_MIN * 60e3) return { ph: "break", left: end + BREAK_MIN * 60e3 - now, full: BREAK_MIN * 60e3 };
+  return { ph: "idle" };
+}
+// Al estar en la sala, tu temporizador sigue al de la sala (y cuenta tus pomodoros)
+function syncTimerToRoom() {
+  if (!room) return;
+  const st = room.state, end = st?.mode === "work" && st.ends_at ? Date.parse(st.ends_at) : 0;
+  if (end > Date.now()) {
+    if (!(timer.running && timer.mode === "work" && timer.endAt === end)) {
+      Object.assign(timer, { mode: "work", running: true, endAt: end, room: room.id }); saveTimer();
+    }
+  } else if (timer.room === room.id && timer.running && timer.mode === "work") {
+    Object.assign(timer, { mode: "work", running: false, remaining: WORK_MIN * 60e3, room: "" }); saveTimer();
+  }
+}
+function renderRoom() {
+  if (!room || !$("#rClock")) return;
+  const p = roomPhase(room.state), ms = p.left || 0, sec = Math.ceil(ms / 1000);
+  $("#rClock").textContent = p.ph === "idle" ? `${pad(WORK_MIN)}:00` : `${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`;
+  $("#rMode").textContent = p.ph === "work" ? t("focus") : p.ph === "break" ? t("break") : t("roomIdle");
+  $("#rTimer").classList.toggle("brk", p.ph === "break");
+  $("#rRing").style.strokeDashoffset = p.ph === "idle" ? "0" : (276.46 * (1 - ms / p.full)).toFixed(2);
+  $("#rStart").hidden = p.ph === "work";
+  $("#rStart").textContent = p.ph === "break" ? t("startNext") : t("startTogether");
+  $("#rStop").hidden = p.ph !== "work";
+  $("#relax").hidden = p.ph !== "break";
+  const lock = p.ph === "work", input = $("#chatIn");
+  input.disabled = lock; $("#chatSend").disabled = lock;
+  input.placeholder = lock ? t("chatPaused") : t("chatPh");
+  if (p.ph !== room.lastPh) { room.lastPh = p.ph; if (p.ph === "idle" && timer.room === room.id) syncTimerToRoom(); }
+}
+async function renderHere() {
+  if (!room?.ch) return;
+  const st = room.ch.presenceState();
+  const ids = Object.keys(st).filter(uid => !room.allowed || room.allowed.has(uid));
+  await ensureProfiles(ids);
+  const box = $("#here"); if (!box || !room) return;
+  const ps = ids.map(id => S.pcache[id]).filter(Boolean);
+  box.innerHTML = `<div class="label" style="margin-bottom:6px">${t("here")} · <span class="num">${ps.length}</span></div>` +
+    (ps.length > 1 ? `<div class="acks">${ps.map(q => ackChip(q)).join("")}</div>` : `<p class="empty" style="padding:0">${t("nobodyHere")}</p>`);
+}
+function renderMsgs() {
+  const box = $("#msgs"); if (!box || !room) return;
+  box.innerHTML = room.msgs.length ? room.msgs.map(m => {
+    const q = S.pcache[m.user_id], d = new Date(m.created_at);
+    return `<div class="msg ${m.user_id === myId() ? "mine" : ""}"><div class="mh">${q ? `<a href="${profileLink(q)}">${esc(q.display_name)}</a>` : "?"} <span class="when num">${pad(d.getHours())}:${pad(d.getMinutes())}</span></div><div class="mb">${esc(m.body)}</div></div>`;
+  }).join("") : `<p class="empty">${t("chatEmpty")}</p>`;
+  box.scrollTop = box.scrollHeight;
+}
+async function viewRoom(rt, id) {
+  app.innerHTML = `<p class="empty">${t("loading")}</p>`;
+  const me = myId(), owner = id === "general" ? null : id;
+  const { data: rels } = await sb.from("buddies").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${me},addressee.eq.${me}`);
+  if (!alive(rt)) return;
+  const myBuddies = (rels || []).map(r => (r.requester === me ? r.addressee : r.requester));
+  if (owner && owner !== me && !myBuddies.includes(owner)) { location.hash = "#/sala"; return; }
+  let allowed = null;
+  if (owner) {
+    const orels = owner === me ? rels : (await sb.from("buddies").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${owner},addressee.eq.${owner}`)).data;
+    allowed = new Set([owner, ...(orels || []).map(r => (r.requester === owner ? r.addressee : r.requester))]);
+  }
+  const [stR, msgR] = await Promise.all([
+    sb.from("room_state").select("*").eq("room", id).maybeSingle(),
+    sb.from("room_messages").select("*").eq("room", id).order("created_at", { ascending: false }).limit(60),
+  ]);
+  if (!alive(rt)) return;
+  if (stR.error || msgR.error) { app.innerHTML = `<div class="notice alert">${t("needSql")}</div>`; return; }
+  const msgs = (msgR.data || []).reverse();
+  await ensureProfiles([me, ...myBuddies, ...(allowed || []), ...msgs.map(m => m.user_id)]);
+  if (!alive(rt)) return;
+
+  const ownerP = owner ? S.pcache[owner] : null;
+  const name = !owner ? t("roomGeneral") : owner === me ? t("roomMine") : t("roomOf", { n: esc(ownerP?.display_name || "?") });
+  const desc = !owner ? t("roomGeneralDesc") : owner === me ? t("roomMineDesc") : t("roomOfDesc", { n: esc(ownerP?.display_name || "?") });
+  const tab = (rid, label) => `<a href="#/sala${rid === "general" ? "" : "/" + rid}" ${rid === id ? 'aria-current="page"' : ""}>${label}</a>`;
+  app.innerHTML = `
+  <nav class="roomtabs" aria-label="${t("navRooms")}">${tab("general", t("roomGeneral"))}${tab(me, t("roomMine"))}${myBuddies.map(b => S.pcache[b] ? tab(b, t("roomOf", { n: esc(S.pcache[b].display_name) })) : "").join("")}</nav>
+  <div class="grid2">
+    <div class="panel">
+      <h1 style="font-size:28px">${name}</h1>
+      <p class="hint" style="margin:4px 0 14px">${desc}</p>
+      <div id="here"></div>
+      <div class="timer" id="rTimer" style="margin-top:16px">
+        <div class="ring">
+          <svg viewBox="0 0 100 100" aria-hidden="true"><circle class="trk" cx="50" cy="50" r="44"/><circle class="prg" id="rRing" cx="50" cy="50" r="44" stroke-dasharray="276.46" stroke-dashoffset="0"/></svg>
+          <div class="t"><span class="mode" id="rMode"></span><span class="clock num" id="rClock">25:00</span></div>
+        </div>
+        <div class="row center"><button class="btn primary" id="rStart">${t("startTogether")}</button><button class="btn" id="rStop" hidden data-orig="${t("stopAll")}">${t("stopAll")}</button></div>
+        <p class="hint">${t("roomHint")}</p>
+        ${distractHTML()}
+      </div>
+    </div>
+    <div class="panel chat">
+      <h2>${t("chat")}</h2>
+      <div class="msgs" id="msgs" aria-live="polite"></div>
+      <form class="add" id="chatForm"><input type="text" id="chatIn" maxlength="500" aria-label="${t("chatPh")}" autocomplete="off"><button class="btn" id="chatSend">${t("send")}</button></form>
+      <p class="hint" style="margin-top:8px">${t("chatHint")}</p>
+    </div>
+  </div>
+  ${relaxHTML(false)}`;
+  S.title = `${name.replace(/<[^>]*>/g, "")} · Focus Mastery`;
+
+  room = { id, state: stR.data, msgs, allowed, ch: null, lastPh: null };
+  syncTimerToRoom(); renderRoom(); renderMsgs(); wireDistract(); wireRelax();
+
+  const ch = sb.channel(`room:${id}`, { config: { presence: { key: me } } });
+  ch.on("presence", { event: "sync" }, renderHere)
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: `room=eq.${id}` }, async ({ new: m }) => {
+      if (room?.id !== id || room.msgs.some(x => x.id === m.id)) return;
+      room.msgs.push(m); room.msgs = room.msgs.slice(-100);
+      await ensureProfiles([m.user_id]); renderMsgs();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "room_state", filter: `room=eq.${id}` }, ({ new: st }) => {
+      if (room?.id !== id || !st?.room) return;
+      room.state = st; syncTimerToRoom(); renderRoom();
+    })
+    .subscribe(async status => { if (status === "SUBSCRIBED") await ch.track({ at: Date.now() }); });
+  room.ch = ch;
+
+  const setState = async patch => {
+    const { data, error } = await sb.from("room_state").upsert({ room: id, by_user: me, updated_at: new Date().toISOString(), ...patch }).select().single();
+    if (failed(error) || room?.id !== id) return;
+    room.state = data; syncTimerToRoom(); renderRoom();
+  };
+  $("#rStart").addEventListener("click", () => {
+    try { (audio ||= new AudioContext()).resume(); } catch {}
+    setState({ mode: "work", ends_at: new Date(Date.now() + WORK_MIN * 60e3).toISOString() });
+  });
+  const stop = $("#rStop");
+  stop.addEventListener("click", () => armDelete(stop, t("sure"), () => setState({ mode: "idle", ends_at: null })));
+  $("#chatForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const input = $("#chatIn"), body = input.value.trim(); if (!body || input.disabled) return;
+    const { data, error } = await sb.from("room_messages").insert({ room: id, body }).select().single();
+    if (failed(error)) return;
+    input.value = "";
+    if (room?.id === id && !room.msgs.some(x => x.id === data.id)) { room.msgs.push(data); renderMsgs(); }
+  });
+}
+
+/* =========================================================
+   Distracciones y zona relax (Hoy y salas)
+   ========================================================= */
+const distractHTML = () => `<div class="distract"><button type="button" class="btn ghost small" id="dOpen" aria-expanded="false">😵 ${t("gotDistracted")}</button>
+  <div class="dkinds" id="dKinds" hidden>${DKINDS.map(([k, e]) => `<button type="button" class="btn small" data-kind="${k}">${e} ${t("dk_" + k)}</button>`).join("")}</div></div>`;
+function wireDistract() {
+  const open = $("#dOpen"), box = $("#dKinds"); if (!open) return;
+  open.addEventListener("click", () => { box.hidden = !box.hidden; open.setAttribute("aria-expanded", !box.hidden); });
+  box.querySelectorAll("[data-kind]").forEach(b => b.addEventListener("click", async () => {
+    const { error } = await sb.from("distractions").insert({ day: today(), kind: b.dataset.kind });
+    if (failed(error, error ? t("needSql") : undefined)) return;
+    box.hidden = true; open.setAttribute("aria-expanded", "false"); toast(t("distractSaved"));
+  }));
+}
+const relaxHTML = show => `<div class="panel relax" id="relax" ${show ? "" : "hidden"}>
+  <h2>${t("relaxTitle")}</h2>
+  <div class="breath" aria-hidden="true"><div class="bcircle"></div>
+    <div class="blabel"><span>${t("inhale")}</span><span>${t("hold")}</span><span>${t("exhale")}</span><span>${t("hold")}</span></div></div>
+  <p class="tip" id="rTip"></p>
+  <div class="row center"><button type="button" class="btn small" id="rNext">${t("otherIdea")}</button></div>
+  <p class="hint" style="text-align:center">${t("relaxHint")}</p></div>`;
+function wireRelax() {
+  const tips = L().tips; let i = Math.floor(Math.random() * tips.length);
+  const show = () => { const el = $("#rTip"); if (el) el.textContent = tips[i % tips.length]; };
+  show(); $("#rNext")?.addEventListener("click", () => { i++; show(); });
+}
+
+/* =========================================================
    Vista: Hoy (privado)
    ========================================================= */
 async function viewHoy(rt) {
   app.innerHTML = `<p class="empty">${t("loading")}</p>`;
-  const [dayR, goalsR, tasksR, acksR] = await Promise.all([
+  const wd = new Date().getDay(), weekend = wd === 0 || wd >= 5;
+  const [dayR, goalsR, tasksR, acksR, nudgeR, revR] = await Promise.all([
     sb.from("days").select("*").eq("user_id", myId()).eq("day", today()).maybeSingle(),
     sb.from("goals").select("*").order("created_at"),
     sb.from("tasks").select("id,title,project,col").neq("col", "done").order("created_at"),
     sb.from("check_acks").select("*").eq("to_user", myId()).eq("day", today()),
+    sb.from("nudges").select("from_user").eq("to_user", myId()).eq("day", today()),
+    weekend ? sb.from("reviews").select("worked,distracted,change").eq("week", dkey(mondayOf(new Date()))).maybeSingle() : Promise.resolve({ data: null }),
   ]);
   if (!alive(rt)) return;
   S.todayRow = dayR.data || null; S.goals = goalsR.data || []; S.tasks = tasksR.data || [];
   const acks = acksR.data || [];
-  const people = await profilesByIds(acks.map(a => a.from_user));
+  const nudgers = (nudgeR.data || []).map(n => n.from_user);
+  const people = await profilesByIds([...acks.map(a => a.from_user), ...nudgers]);
   if (!alive(rt)) return;
   const td = S.todayRow || {};
   const p = td.pomos || 0;
+  const nudgeNames = nudgers.map(id => people[id]?.display_name).filter(Boolean);
+  const rv = revR.data, reviewDue = weekend && !revR.error && !(rv && (rv.worked || rv.distracted || rv.change));
 
   app.innerHTML = `
+  ${nudgeNames.length && !td.checked_in ? `<div class="notice alert">${t(nudgeNames.length === 1 ? "nudgedYouOne" : "nudgedYouMany", { n: esc(nudgeNames.join(", ")) })}</div>` : ""}
+  ${reviewDue ? `<div class="notice ok row between"><span>${t("reviewDue")}</span><a class="btn small" href="#/diario">${t("doReview")}</a></div>` : ""}
   <div class="grid2">
     <div class="panel">
       <div class="timer" id="timer">
@@ -652,6 +872,8 @@ async function viewHoy(rt) {
           <button class="btn ghost" id="tSkip">${t("skip")}</button>
         </div>
         <div class="today-count">${t("todayCount", { p, min: DAY_MIN, max: DAY_MAX })}${S.me.start_time ? t("youStartAt", { t: esc(S.me.start_time) }) : ""}</div>
+        ${timer.room && timer.running ? `<div class="hint">${t("linkedRoom")}</div>` : ""}
+        ${distractHTML()}
         ${p >= DAY_MAX + 2 ? `<div class="warn">${t("overWarn")}</div>` : p >= DAY_MAX ? `<div class="warn">${t("dailyReached")}</div>` : ""}
       </div>
     </div>
@@ -667,6 +889,7 @@ async function viewHoy(rt) {
       <p class="privnote" style="margin-top:10px">${t("goalsPrivate")}</p>
     </div>
   </div>
+  ${relaxHTML(timer.mode === "break")}
   <div class="panel">
     <div class="row between"><h2 style="margin:0">${t("checkinTitle")}</h2>${td.checked_in ? `<span class="pill ok">${t("done")}</span>` : `<span class="pill part">${t("pending")}</span>`}</div>
     <p class="hint" style="margin:8px 0 12px">${t("checkinHint")}</p>
@@ -690,13 +913,14 @@ async function viewHoy(rt) {
   const sel = $("#tTask"); sel.value = S.tasks.some(k => k.id === timer.taskId) ? timer.taskId : "";
   sel.addEventListener("change", () => { timer.taskId = sel.value; saveTimer(); });
   $("#tStart").addEventListener("click", () => {
+    timer.room = "";
     if (timer.running) { timer.remaining = leftMs(); timer.running = false; }
     else { timer.endAt = Date.now() + timer.remaining; timer.running = true; try { (audio ||= new AudioContext()).resume(); } catch {} }
     saveTimer(); renderTimer();
   });
-  $("#tReset").addEventListener("click", () => { timer.running = false; timer.remaining = fullMs(); saveTimer(); renderTimer(); });
-  $("#tSkip").addEventListener("click", () => { timer.running = false; timer.mode = timer.mode === "work" ? "break" : "work"; timer.remaining = fullMs(); saveTimer(); renderTimer(); });
-  renderTimer();
+  $("#tReset").addEventListener("click", () => { timer.room = ""; timer.running = false; timer.remaining = fullMs(); saveTimer(); renderTimer(); });
+  $("#tSkip").addEventListener("click", () => { timer.room = ""; timer.running = false; timer.mode = timer.mode === "work" ? "break" : "work"; timer.remaining = fullMs(); saveTimer(); renderTimer(); });
+  renderTimer(); wireDistract(); wireRelax();
 
   $("#gSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { S.gScope = b.dataset.scope; renderGoals(); } });
   $("#gForm").addEventListener("submit", async e => {
@@ -865,6 +1089,15 @@ async function viewJournal(rt) {
   if (failed(error, t("errJournal"))) return;
   const entries = Object.fromEntries((data || []).map(j => [j.day, j.text]));
   app.innerHTML = `
+  <div class="panel" id="review">
+    <div class="row between" style="margin-bottom:10px">
+      <h2 style="margin:0">${t("weeklyReview")}</h2>
+      <div class="row" style="gap:4px"><button type="button" class="btn ghost small" id="rwPrev" aria-label="${t("prevWeek")}">◀</button>
+        <span id="rwLabel" class="num"></span>
+        <button type="button" class="btn ghost small" id="rwNext" aria-label="${t("nextWeek")}">▶</button></div>
+    </div>
+    <div id="rwBody"><p class="empty">${t("loading")}</p></div>
+  </div>
   <div class="jgrid">
     <div class="panel"><div class="label" style="margin-bottom:8px">${t("entries")}</div><ul class="jlist" id="jList"></ul></div>
     <div class="panel">
@@ -888,8 +1121,62 @@ async function viewJournal(rt) {
   };
   text.addEventListener("input", () => { $("#jSaved").textContent = t("typing"); clearTimeout(jTimer); jTimer = setTimeout(() => { flush(); }, 1200); });
   text.addEventListener("blur", flush);
+  const goWeek = n => { flushReview(); S.rWeek = dkey(addDays(parseKey(S.rWeek), 7 * n)); loadReview(rt); };
+  $("#rwPrev").addEventListener("click", () => goWeek(-1));
+  $("#rwNext").addEventListener("click", () => goWeek(1));
+  loadReview(rt);
   $("#jDate").addEventListener("change", e => { if (!e.target.value) return; flush(); S.jDate = e.target.value; load(); });
   load();
+}
+
+/* Revisión semanal (dentro del Diario) */
+let rwTimer = null, rwPending = null;
+async function flushReview() {
+  if (!rwTimer) return; clearTimeout(rwTimer); rwTimer = null;
+  const row = rwPending; rwPending = null;
+  const { error } = await sb.from("reviews").upsert(row, { onConflict: "user_id,week" });
+  if (!failed(error) && $("#rwSaved") && S.rWeek === row.week) $("#rwSaved").textContent = t("saved");
+}
+async function loadReview(rt) {
+  const curMon = dkey(mondayOf(new Date()));
+  if (S.rWeek > curMon) S.rWeek = curMon;
+  const week = S.rWeek, mon = parseKey(week), end = dkey(addDays(mon, 6));
+  $("#rwLabel").textContent = t("weekOf", { d: fmtDay(week) });
+  $("#rwNext").disabled = week >= curMon;
+  const [dR, gR, xR, rR] = await Promise.all([
+    sb.from("days").select("day,pomos,checked_in").eq("user_id", myId()).gte("day", week).lte("day", end),
+    sb.from("goals").select("done").eq("scope", "week").eq("period", weekKey(mon)),
+    sb.from("distractions").select("kind").gte("day", week).lte("day", end),
+    sb.from("reviews").select("*").eq("week", week).maybeSingle(),
+  ]);
+  if (!alive(rt) || S.rWeek !== week || !$("#rwBody")) return;
+  if (xR.error || rR.error) { $("#rwBody").innerHTML = `<p class="notice alert">${t("needSql")}</p>`; return; }
+  const days = dR.data || [], goals = gR.data || [], xs = xR.data || [], rv = rR.data || {};
+  const pomos = days.reduce((a, d) => a + (d.pomos || 0), 0), checks = days.filter(d => d.checked_in).length;
+  const gDone = goals.filter(g => g.done).length;
+  const counts = {}; for (const x of xs) counts[x.kind] = (counts[x.kind] || 0) + 1;
+  const kinds = DKINDS.filter(([k]) => counts[k]).sort((a, b) => counts[b[0]] - counts[a[0]]);
+  const q = (id, key, val) => `<div class="field"><label class="label" for="${id}">${t(key)}</label><textarea id="${id}" rows="3" maxlength="4000">${esc(val || "")}</textarea></div>`;
+  $("#rwBody").innerHTML = `
+    <div class="rwstats">
+      <span><strong class="num">${pomos}</strong> ${t("rwPomos", { h: hours(pomos), target: WEEK_TARGET })}</span>
+      <span><strong class="num">${checks}/7</strong> ${t("rwCheckins")}</span>
+      <span>${goals.length ? `<strong class="num">${gDone}/${goals.length}</strong> ${t("rwGoals")}` : t("rwNoGoals")}</span>
+    </div>
+    <div class="label" style="margin:12px 0 6px">${t("rwDistractions")}</div>
+    ${kinds.length ? `<div class="acks">${kinds.map(([k, e]) => `<span class="ack" style="padding:3px 10px">${e} ${t("dk_" + k)} · <b class="num">${counts[k]}</b></span>`).join("")}</div>`
+      : `<p class="empty">${t("rwNoDistractions")}</p>`}
+    <div class="rwqs">${q("rw1", "rwQ1", rv.worked)}${q("rw2", "rwQ2", rv.distracted)}${q("rw3", "rwQ3", rv.change)}</div>
+    <div class="row between"><p class="privnote" style="margin:0">${t("reviewPrivate")}</p><span class="saved" id="rwSaved"></span></div>`;
+  ["rw1", "rw2", "rw3"].forEach(id => {
+    const el = $("#" + id);
+    el.addEventListener("input", () => {
+      $("#rwSaved").textContent = t("typing");
+      rwPending = { user_id: myId(), week, worked: $("#rw1").value, distracted: $("#rw2").value, change: $("#rw3").value, updated_at: new Date().toISOString() };
+      clearTimeout(rwTimer); rwTimer = setTimeout(flushReview, 1200);
+    });
+    el.addEventListener("blur", flushReview);
+  });
 }
 
 /* =========================================================
@@ -922,6 +1209,6 @@ if (!configured) {
   });
   if (location.search.includes("code=") && S.session) history.replaceState(null, "", location.pathname + (location.hash || "#/hoy"));
   addEventListener("hashchange", route);
-  addEventListener("beforeunload", () => { if (jTimer) $("#jText")?.dispatchEvent(new Event("blur")); });
+  addEventListener("beforeunload", () => { if (jTimer) $("#jText")?.dispatchEvent(new Event("blur")); flushReview(); });
   route();
 }

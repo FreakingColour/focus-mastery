@@ -12,6 +12,7 @@ Es una web estática (HTML + JS, sin instalar nada) con [Supabase](https://supab
 ### 1. Crea la base de datos
 1. Crea una cuenta en supabase.com y un proyecto nuevo (región: Europa).
 2. Ve a **SQL Editor → New query**, pega todo `supabase/schema.sql` y pulsa **Run**.
+3. Haz lo mismo con `supabase/02_salas_y_revision.sql` (salas de foco, chat, revisión semanal, distracciones y toques).
 
 ### 2. Conecta la web
 1. En Supabase: **Project Settings → API**.
@@ -34,6 +35,7 @@ Después, en Supabase → **Authentication → URL Configuration**:
 Alternativa: GitHub Pages (sube la carpeta a un repo y activa Pages).
 
 ## Cosas que conviene saber
+- **Salas**: la General está abierta a cualquiera con cuenta, así que su chat lo puede leer cualquier persona registrada. La sala de cada persona solo la ven ella y sus buddies. El chat se bloquea durante el foco.
 - **Emails de acceso**: Supabase gratis envía pocos emails por hora (pensado para pruebas). Para tu grupo de amigos basta. Si se abre a mucha gente, configura un SMTP propio (por ejemplo, Resend, gratis hasta 3 000 emails al mes) en Authentication → SMTP.
 - **Pausa por inactividad**: los proyectos gratuitos de Supabase se pausan tras 7 días sin uso. Si lo usáis a diario, no pasa.
 - **Privacidad**: tus tareas, objetivos y diario solo los puede leer tu cuenta (Row Level Security). Tú, como administradora del proyecto de Supabase, técnicamente puedes ver todos los datos desde el panel. Tenlo en cuenta si invitas a gente.
@@ -50,3 +52,4 @@ Sube el número `?v=` en `index.html` (styles.css y app.js) y en los `import` de
 - `i18n.js`: todos los textos en español e inglés. La web elige el idioma del navegador y se puede cambiar con el botón ES/EN del menú.
 - `config.js`: tus claves de Supabase
 - `supabase/schema.sql`: tablas y reglas de seguridad
+- `supabase/02_salas_y_revision.sql`: salas de foco con chat en tiempo real, revisión semanal, registro de distracciones y toques entre buddies
