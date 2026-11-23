@@ -56,7 +56,7 @@ main{padding-block:28px 64px;display:grid;gap:20px}
 .btn.ghost:hover{color:var(--ink);background:var(--sunk)}
 .btn.small{padding:4px 10px;font-size:13px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-input[type=text],input[type=email],input[type=number],input[type=time],input[type=date],select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+input[type=text],input[type=email],input[type=password],input[type=number],input[type=time],input[type=date],select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
 textarea{width:100%;resize:vertical}
 form.add{display:flex;gap:8px;flex-wrap:wrap}
 form.add input[type=text],form.add input[type=email]{flex:1 1 180px}
