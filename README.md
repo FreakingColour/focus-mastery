@@ -44,5 +44,6 @@ Alternativa: GitHub Pages (sube la carpeta a un repo y activa Pages).
 - `index.html`: estructura de la página
 - `styles.css`: diseño
 - `app.js`: toda la lógica (vistas, temporizador, buddies, check-ins)
+- `i18n.js`: todos los textos en español e inglés. La web elige el idioma del navegador y se puede cambiar con el botón ES/EN del menú.
 - `config.js`: tus claves de Supabase
 - `supabase/schema.sql`: tablas y reglas de seguridad

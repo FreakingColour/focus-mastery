@@ -1,13 +1,34 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
+import { STRINGS } from "./i18n.js";
+
+/* =========================================================
+   Idioma
+   ========================================================= */
+const ls = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let lang = ls.get("fm-lang") || ((navigator.language || "").toLowerCase().startsWith("es") ? "es" : "en");
+if (!STRINGS[lang]) lang = "en";
+const L = () => STRINGS[lang];
+function t(key, vars) {
+  let s = STRINGS[lang][key] ?? STRINGS.es[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(v);
+  return s;
+}
+function setLang(l) {
+  lang = l; ls.set("fm-lang", l);
+  document.documentElement.lang = l;
+  document.querySelector('meta[name="description"]')?.setAttribute("content", t("landLead"));
+}
+setLang(lang);
 
 /* =========================================================
    Constantes y utilidades
    ========================================================= */
 const WEEK_TARGET = 15, DAY_MIN = 8, DAY_MAX = 12, WORK_MIN = 25, BREAK_MIN = 5, MIN_BUDDIES = 3;
 const EMOJIS = ["✅", "💪", "🔥", "👏", "🍅", "🫂"];
-const DAYS_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
-const MONTHS_ES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
 const $ = s => document.querySelector(s);
 const app = $("#app");
@@ -19,29 +40,28 @@ const addDays = (d, n) => { const x = new Date(d.getFullYear(), d.getMonth(), d.
 const mondayOf = d => addDays(d, -((d.getDay() + 6) % 7));
 const monthKey = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
 function weekKey(d) {
-  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - day);
-  const y = t.getUTCFullYear();
-  return `${y}-W${pad(Math.ceil(((t - Date.UTC(y, 0, 1)) / 864e5 + 1) / 7))}`;
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = x.getUTCDay() || 7; x.setUTCDate(x.getUTCDate() + 4 - day);
+  const y = x.getUTCFullYear();
+  return `${y}-W${pad(Math.ceil(((x - Date.UTC(y, 0, 1)) / 864e5 + 1) / 7))}`;
 }
 const periodFor = scope => scope === "day" ? today() : scope === "week" ? weekKey(new Date()) : monthKey(new Date());
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const ls = {
-  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+const hours = p => (p * WORK_MIN / 60).toFixed(1).replace(".", L().decimal);
+const fmtDay = k => {
+  const d = parseKey(k), wd = L().days[(d.getDay() + 6) % 7], mo = L().months[d.getMonth()].slice(0, 3);
+  return lang === "en" ? `${wd} ${mo} ${d.getDate()}` : `${wd} ${d.getDate()} ${mo}`;
 };
-const hours = p => (p * WORK_MIN / 60).toFixed(1).replace(".", ",");
-const fmtDay = k => { const d = parseKey(k); return `${DAYS_ES[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS_ES[d.getMonth()].slice(0, 3)}`; };
 
 function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 3500);
+  const el = $("#toast"); el.textContent = msg; el.hidden = false;
+  clearTimeout(toast._t); toast._t = setTimeout(() => (el.hidden = true), 3500);
 }
 function failed(error, friendly) {
   if (!error) return false;
   console.error(error);
-  if (error.code === "23505") toast(friendly || "Eso ya existe.");
-  else toast(friendly || "No se pudo guardar. Revisa la conexión e inténtalo de nuevo.");
+  if (error.code === "23505") toast(friendly || t("errExists"));
+  else toast(friendly || t("errSave"));
   return true;
 }
 
@@ -51,6 +71,10 @@ function avatar(p, size = "") {
   return `<span class="avatar ${size}" style="background:hsl(${h} 45% 45%)" aria-hidden="true">${esc(name.trim()[0]?.toUpperCase() || "?")}</span>`;
 }
 const profileLink = p => `#/u/${encodeURIComponent(p.username)}`;
+function armDelete(b, label, onConfirm) {
+  if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = label; setTimeout(() => { delete b.dataset.armed; b.textContent = b.dataset.orig; }, 2500); return; }
+  onConfirm();
+}
 
 /* =========================================================
    Supabase y estado
@@ -115,20 +139,22 @@ const alive = rt => rt === S.rt;
 
 function renderNav(view) {
   const nav = $("#nav");
+  const langBtn = `<button type="button" id="langBtn" aria-label="${esc(t("langSwitchLabel"))}" title="${esc(t("langSwitchLabel"))}">${t("langSwitch")}</button>`;
   if (!S.session || !S.me) {
-    nav.innerHTML = S.session
-      ? `<button type="button" id="logout">Salir</button>`
-      : `<a href="#/" ${view === "" ? 'aria-current="page"' : ""}>Entrar</a>`;
+    nav.innerHTML = (S.session
+      ? `<button type="button" id="logout">${t("navLogout")}</button>`
+      : `<a href="#/" ${view === "" ? 'aria-current="page"' : ""}>${t("navLogin")}</a>`) + langBtn;
   } else {
     const ownProfile = view === "u" && parseRoute().arg.toLowerCase() === S.me.username;
-    const item = (v, label, lock) => `<a href="#/${v}" ${view === v || (v === "yo" && ownProfile) ? 'aria-current="page"' : ""}>${label}${lock ? ' <span class="lock" aria-label="privado">🔒</span>' : ""}</a>`;
+    const item = (v, label, lock) => `<a href="#/${v}" ${view === v || (v === "yo" && ownProfile) ? 'aria-current="page"' : ""}>${label}${lock ? ` <span class="lock" aria-label="${t("private")}">🔒</span>` : ""}</a>`;
     nav.innerHTML =
-      item("hoy", "Hoy", true) + item("tablero", "Tablero", true) + item("diario", "Diario", true) +
-      item("yo", "Mi perfil") +
-      `<a href="#/buddies" ${view === "buddies" ? 'aria-current="page"' : ""}>Buddies <span class="badge" id="navBadge" ${S.pendingIn ? "" : "hidden"}>${S.pendingIn}</span></a>` +
-      `<button type="button" id="logout">Salir</button>`;
+      item("hoy", t("navToday"), true) + item("tablero", t("navBoard"), true) + item("diario", t("navJournal"), true) +
+      item("yo", t("navProfile")) +
+      `<a href="#/buddies" ${view === "buddies" ? 'aria-current="page"' : ""}>${t("navBuddies")} <span class="badge" id="navBadge" ${S.pendingIn ? "" : "hidden"}>${S.pendingIn}</span></a>` +
+      `<button type="button" id="logout">${t("navLogout")}</button>` + langBtn;
   }
   $("#logout")?.addEventListener("click", async () => { await sb.auth.signOut(); location.hash = "#/"; });
+  $("#langBtn").addEventListener("click", () => { setLang(lang === "es" ? "en" : "es"); route(); });
 }
 
 /* =========================================================
@@ -136,8 +162,7 @@ function renderNav(view) {
    ========================================================= */
 function viewSetup() {
   $("#nav").innerHTML = "";
-  app.innerHTML = `<div class="panel"><h2>Falta conectar la base de datos</h2>
-    <p>Abre <code>config.js</code> y pega la <b>Project URL</b> y la <b>anon public key</b> de tu proyecto de Supabase. Los pasos están en <code>README.md</code>.</p></div>`;
+  app.innerHTML = `<div class="panel"><h2>${t("setupTitle")}</h2><p>${t("setupBody")}</p></div>`;
 }
 
 /* =========================================================
@@ -147,37 +172,37 @@ function viewLanding() {
   app.innerHTML = `
   <section class="landing">
     <div>
-      <div class="label">Accountability entre amigos</div>
-      <h1 style="margin-top:8px">Concéntrate.<br><em>Con tu gente mirando.</em></h1>
-      <p class="lead">Focus Mastery es gratis y tiene solo dos normas. Tus pomodoros son públicos, y cada día tú y tus buddies os revisáis mutuamente.</p>
+      <div class="label">${t("landEyebrow")}</div>
+      <h1 style="margin-top:8px">${t("landTitle1")}<br><em>${t("landTitle2")}</em></h1>
+      <p class="lead">${t("landLead")}</p>
       <ol class="rules">
-        <li><div><b>Cuenta tus pomodoros</b><span class="muted">25 minutos de foco real. Tu perfil muestra cuántos haces y si cumples tus objetivos; el detalle es privado.</span></div></li>
-        <li><div><b>Mínimo 3 accountability buddies</b><span class="muted">Personas que ven tu progreso y a las que tú ves. Sin tres buddies, tu perfil lo dice.</span></div></li>
-        <li><div><b>Check diario mutuo</b><span class="muted">Cada día haces tu check-in y das el visto al día de cada buddy. Ellos hacen lo mismo contigo.</span></div></li>
+        <li><div><b>${t("rule1Title")}</b><span class="muted">${t("rule1Body")}</span></div></li>
+        <li><div><b>${t("rule2Title")}</b><span class="muted">${t("rule2Body")}</span></div></li>
+        <li><div><b>${t("rule3Title")}</b><span class="muted">${t("rule3Body")}</span></div></li>
       </ol>
     </div>
     <div class="panel">
-      <div class="seg" id="authSeg" role="group" aria-label="Acceso" style="margin-bottom:16px">
-        <button type="button" data-mode="login" aria-pressed="true">Entrar</button>
-        <button type="button" data-mode="signup" aria-pressed="false">Crear cuenta</button>
+      <div class="seg" id="authSeg" role="group" aria-label="${t("authAccess")}" style="margin-bottom:16px">
+        <button type="button" data-mode="login" aria-pressed="true">${t("authLogin")}</button>
+        <button type="button" data-mode="signup" aria-pressed="false">${t("authSignup")}</button>
       </div>
       <form class="form" id="loginForm">
-        <div class="field"><label class="label" for="email">Email</label>
-          <input type="email" id="email" required autocomplete="email" placeholder="tu@email.com"></div>
-        <div class="field" id="pwField"><label class="label" for="password">Contraseña</label>
+        <div class="field"><label class="label" for="email">${t("email")}</label>
+          <input type="email" id="email" required autocomplete="email" placeholder="${t("emailPh")}"></div>
+        <div class="field" id="pwField"><label class="label" for="password">${t("password")}</label>
           <input type="password" id="password" required minlength="8" autocomplete="current-password">
-          <p class="hint" id="pwHint" hidden>Mínimo 8 caracteres.</p></div>
-        <button class="btn primary" id="loginBtn">Entrar</button>
+          <p class="hint" id="pwHint" hidden>${t("pwMin")}</p></div>
+        <button class="btn primary" id="loginBtn">${t("authLogin")}</button>
         <div class="row" style="gap:16px">
-          <button type="button" class="btn ghost small" id="forgotBtn">¿Has olvidado la contraseña?</button>
-          <button type="button" class="btn ghost small" id="magicBtn">Entrar con un enlace por email</button>
+          <button type="button" class="btn ghost small" id="forgotBtn">${t("forgot")}</button>
+          <button type="button" class="btn ghost small" id="magicBtn">${t("magic")}</button>
         </div>
       </form>
       <div id="loginSent" class="notice ok" hidden style="margin-top:12px"></div>
       <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
       <form class="add" id="lookForm">
-        <input type="text" id="lookUser" placeholder="Ver un perfil: @usuario" aria-label="Nombre de usuario">
-        <button class="btn">Ver</button>
+        <input type="text" id="lookUser" placeholder="${t("lookPh")}" aria-label="${t("lookLabel")}">
+        <button class="btn">${t("see")}</button>
       </form>
     </div>
   </section>`;
@@ -186,19 +211,19 @@ function viewLanding() {
   const sent = msg => { const n = $("#loginSent"); n.hidden = false; n.textContent = msg; };
   const authError = (error, fallback) => {
     console.error(error);
-    if (error.status === 429) return toast("Demasiados intentos. Espera un minuto.");
-    if (/invalid login credentials/i.test(error.message)) return toast("Email o contraseña incorrectos.");
-    if (/email not confirmed/i.test(error.message)) return toast("Primero confirma tu email: revisa tu bandeja de entrada.");
-    if (/already registered/i.test(error.message)) return toast("Ese email ya tiene cuenta. Entra con tu contraseña.");
-    if (/password/i.test(error.message) && error.status === 422) return toast("La contraseña es demasiado débil. Usa al menos 8 caracteres.");
+    if (error.status === 429) return toast(t("errTooMany"));
+    if (/invalid login credentials/i.test(error.message)) return toast(t("errBadLogin"));
+    if (/email not confirmed/i.test(error.message)) return toast(t("errNotConfirmed"));
+    if (/already registered/i.test(error.message)) return toast(t("errRegistered"));
+    if (/password/i.test(error.message) && error.status === 422) return toast(t("errWeakPw"));
     toast(fallback);
   };
-  const emailVal = () => { const v = $("#email").value.trim(); if (!v) { $("#email").reportValidity(); } return v; };
+  const emailVal = () => { const v = $("#email").value.trim(); if (!v) $("#email").reportValidity(); return v; };
   $("#authSeg").addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
     mode = b.dataset.mode;
     $("#authSeg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
-    $("#loginBtn").textContent = mode === "login" ? "Entrar" : "Crear cuenta";
+    $("#loginBtn").textContent = mode === "login" ? t("authLogin") : t("authSignup");
     $("#password").autocomplete = mode === "login" ? "current-password" : "new-password";
     $("#pwHint").hidden = mode === "login"; $("#forgotBtn").hidden = mode !== "login";
     $("#loginSent").hidden = true;
@@ -210,25 +235,25 @@ function viewLanding() {
     if (mode === "login") {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       $("#loginBtn").disabled = false;
-      if (error) return authError(error, "No se pudo entrar. Inténtalo de nuevo.");
+      if (error) return authError(error, t("errLogin"));
     } else {
       const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: redirect } });
       $("#loginBtn").disabled = false;
-      if (error) return authError(error, "No se pudo crear la cuenta. Inténtalo de nuevo.");
-      if (!data.session) sent(`Te hemos enviado un email a ${email} para confirmar la cuenta. Ábrelo en este navegador y ya estarás dentro.`);
+      if (error) return authError(error, t("errSignup"));
+      if (!data.session) sent(t("sentConfirm", { email }));
     }
   });
   $("#forgotBtn").addEventListener("click", async () => {
     const email = emailVal(); if (!email) return;
     const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: redirect });
-    if (error) return authError(error, "No se pudo enviar el email.");
-    sent(`Si ${email} tiene cuenta, te llegará un enlace para elegir una contraseña nueva. Ábrelo en este navegador.`);
+    if (error) return authError(error, t("errSendEmail"));
+    sent(t("sentReset", { email }));
   });
   $("#magicBtn").addEventListener("click", async () => {
     const email = emailVal(); if (!email) return;
     const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: redirect } });
-    if (error) return authError(error, "No se pudo enviar el enlace. Revisa el email.");
-    sent(`Te hemos enviado un enlace a ${email}. Ábrelo en este navegador para entrar.`);
+    if (error) return authError(error, t("errSendLink"));
+    sent(t("sentMagic", { email }));
   });
   $("#lookForm").addEventListener("submit", e => {
     e.preventDefault(); const u = $("#lookUser").value.trim().replace(/^@/, "").toLowerCase(); if (u) location.hash = `#/u/${encodeURIComponent(u)}`;
@@ -236,30 +261,30 @@ function viewLanding() {
 }
 
 /* =========================================================
-   Vista: elegir contraseña (tras "la he olvidado" o para cambiarla)
+   Vista: elegir contraseña
    ========================================================= */
 function viewPassword() {
   app.innerHTML = `
   <div class="panel">
-    <h2>Elige tu contraseña</h2>
+    <h2>${t("pwTitle")}</h2>
     <form class="form" id="pwForm">
-      <div class="field"><label class="label" for="pw1">Contraseña nueva</label>
+      <div class="field"><label class="label" for="pw1">${t("pwNew")}</label>
         <input type="password" id="pw1" required minlength="8" autocomplete="new-password"></div>
-      <div class="field"><label class="label" for="pw2">Repítela</label>
+      <div class="field"><label class="label" for="pw2">${t("pwRepeat")}</label>
         <input type="password" id="pw2" required minlength="8" autocomplete="new-password"></div>
-      <p class="hint">Mínimo 8 caracteres.</p>
-      <button class="btn primary" id="pwBtn">Guardar contraseña</button>
+      <p class="hint">${t("pwMin")}</p>
+      <button class="btn primary" id="pwBtn">${t("pwSave")}</button>
     </form>
   </div>`;
   $("#pwForm").addEventListener("submit", async e => {
     e.preventDefault();
     const a = $("#pw1").value, b = $("#pw2").value;
-    if (a !== b) { toast("Las contraseñas no coinciden."); return; }
+    if (a !== b) { toast(t("pwMismatch")); return; }
     $("#pwBtn").disabled = true;
     const { error } = await sb.auth.updateUser({ password: a });
     $("#pwBtn").disabled = false;
-    if (error) { console.error(error); toast(/different from the old/i.test(error.message) ? "Tiene que ser distinta de la anterior." : "No se pudo guardar. Usa al menos 8 caracteres."); return; }
-    toast("Contraseña guardada");
+    if (error) { console.error(error); toast(/different from the old/i.test(error.message) ? t("pwSameOld") : t("pwErr")); return; }
+    toast(t("pwSaved"));
     location.hash = S.me ? "#/hoy" : "#/bienvenida";
   });
 }
@@ -270,17 +295,17 @@ function viewPassword() {
 function viewOnboarding() {
   app.innerHTML = `
   <div class="panel">
-    <h2>Crea tu perfil</h2>
-    <p class="hint" style="margin-bottom:16px">Tu perfil y tus pomodoros serán públicos. Tus tareas, el texto de tus objetivos y tu diario, no.</p>
+    <h2>${t("obTitle")}</h2>
+    <p class="hint" style="margin-bottom:16px">${t("obIntro")}</p>
     <form class="form" id="obForm">
-      <div class="field"><label class="label" for="obUser">Nombre de usuario</label>
+      <div class="field"><label class="label" for="obUser">${t("obUser")}</label>
         <input type="text" id="obUser" required pattern="[a-z0-9_]{3,20}" placeholder="paula_phd" autocomplete="username">
-        <p class="hint">3–20 caracteres: minúsculas, números y _. Será tu enlace: #/u/usuario</p></div>
-      <div class="field"><label class="label" for="obName">Nombre visible</label>
-        <input type="text" id="obName" required maxlength="60" placeholder="Paula"></div>
-      <div class="field"><label class="label" for="obStart">¿A qué hora empiezas a trabajar cada día?</label>
+        <p class="hint">${t("obUserHint")}</p></div>
+      <div class="field"><label class="label" for="obName">${t("obName")}</label>
+        <input type="text" id="obName" required maxlength="60" placeholder="${t("obNamePh")}"></div>
+      <div class="field"><label class="label" for="obStart">${t("obStart")}</label>
         <input type="time" id="obStart" value="09:00"></div>
-      <button class="btn primary">Crear perfil</button>
+      <button class="btn primary">${t("obCreate")}</button>
     </form>
   </div>`;
   $("#obUser").addEventListener("input", e => { e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""); });
@@ -288,17 +313,17 @@ function viewOnboarding() {
     e.preventDefault();
     const row = { id: myId(), username: $("#obUser").value.trim(), display_name: $("#obName").value.trim(), start_time: $("#obStart").value || null };
     const { data, error } = await sb.from("profiles").insert(row).select().single();
-    if (failed(error, error?.code === "23505" ? "Ese nombre de usuario ya está cogido." : undefined)) return;
-    S.me = data; toast("¡Perfil creado! Ahora busca a tus 3 buddies.");
+    if (failed(error, error?.code === "23505" ? t("obTaken") : undefined)) return;
+    S.me = data; toast(t("obDone"));
     location.hash = "#/buddies";
   });
 }
 
 /* =========================================================
-   Progreso (compartido por perfil y vista propia)
+   Progreso (compartido)
    ========================================================= */
 function goalPill(d) {
-  if (!d.goals_total) return `<span class="pill none">sin objetivos</span>`;
+  if (!d.goals_total) return `<span class="pill none">${t("noGoals")}</span>`;
   if (d.goals_done >= d.goals_total) return `<span class="pill ok">✓ ${d.goals_done}/${d.goals_total}</span>`;
   return `<span class="pill part">${d.goals_done}/${d.goals_total}</span>`;
 }
@@ -311,12 +336,12 @@ function streakOf(days, field) {
   return n;
 }
 function weekTotal(days, ref = new Date()) {
-  const mon = mondayOf(ref); let t = 0;
-  for (let i = 0; i < 7; i++) t += days[dkey(addDays(mon, i))]?.pomos || 0;
-  return t;
+  const mon = mondayOf(ref); let total = 0;
+  for (let i = 0; i < 7; i++) total += days[dkey(addDays(mon, i))]?.pomos || 0;
+  return total;
 }
 function progressHTML(days) {
-  const now = new Date(), tk = today(), t = days[tk] || {}, mon = mondayOf(now);
+  const now = new Date(), tk = today(), td = days[tk] || {}, mon = mondayOf(now);
   const wk = weekTotal(days), mk = monthKey(now);
   let mo = 0, moDays = 0;
   for (const [k, v] of Object.entries(days)) if (k.startsWith(mk) && v.pomos) { mo += v.pomos; moDays++; }
@@ -324,40 +349,41 @@ function progressHTML(days) {
   for (let i = 0; i < 7; i++) {
     const dd = addDays(mon, i), k = dkey(dd), v = days[k] || {};
     const cls = ["day", k === tk ? "today" : "", dd > now && k !== tk ? "future" : ""].join(" ");
-    week += `<div class="${cls}"><span class="dn">${DAYS_ES[i]} ${dd.getDate()}</span><span class="dp num">${v.pomos || 0}</span>
+    week += `<div class="${cls}"><span class="dn">${L().days[i]} ${dd.getDate()}</span><span class="dp num">${v.pomos || 0}</span>
       <span class="dots">${"<b></b>".repeat(Math.min(v.pomos || 0, 16))}</span>${goalPill(v)}
-      <span class="st">${v.checked_in ? "check ✓" : v.first_at ? "inicio " + esc(v.first_at) : "—"}</span></div>`;
+      <span class="st">${v.checked_in ? t("checkDone") : v.first_at ? t("startAt", { t: esc(v.first_at) }) : "—"}</span></div>`;
   }
   let heat = ""; const start = addDays(mon, -19 * 7);
   for (let i = 0; i < 140; i++) {
     const dd = addDays(start, i), k = dkey(dd);
     if (dd > now) heat += `<i class="out"></i>`;
-    else { const p = days[k]?.pomos || 0; heat += `<i data-l="${level(p)}" title="${dd.getDate()} ${MONTHS_ES[dd.getMonth()]}: ${p} pomodoros"></i>`; }
+    else { const p = days[k]?.pomos || 0; heat += `<i data-l="${level(p)}" title="${t("heatTitle", { d: dd.getDate(), m: L().months[dd.getMonth()], p })}"></i>`; }
   }
   return `
   <div class="stats">
-    <div class="stat"><span class="label">Hoy</span><span class="big num">${t.pomos || 0}</span><span class="sub">pomodoros · ${hours(t.pomos || 0)} h</span></div>
-    <div class="stat"><span class="label">Esta semana</span><span class="big num">${wk}<small> / ${WEEK_TARGET}</small></span>
+    <div class="stat"><span class="label">${t("statToday")}</span><span class="big num">${td.pomos || 0}</span><span class="sub">${t("statTodaySub", { h: hours(td.pomos || 0) })}</span></div>
+    <div class="stat"><span class="label">${t("statWeek")}</span><span class="big num">${wk}<small> / ${WEEK_TARGET}</small></span>
       <div class="bar ${wk >= WEEK_TARGET ? "ok" : ""}"><i style="width:${Math.min(100, wk / WEEK_TARGET * 100)}%"></i></div>
-      <span class="sub">${wk >= WEEK_TARGET ? "meta semanal cumplida" : `faltan ${WEEK_TARGET - wk} para la meta`}</span></div>
-    <div class="stat"><span class="label">Racha</span><span class="big num">${streakOf(days, "pomos")}</span><span class="sub">días seguidos con foco</span></div>
-    <div class="stat"><span class="label">Check-ins</span><span class="big num">${streakOf(days, "checked_in")}</span><span class="sub">días seguidos · ${mo} 🍅 este mes en ${moDays} días</span></div>
+      <span class="sub">${wk >= WEEK_TARGET ? t("weekDone") : t("weekLeft", { n: WEEK_TARGET - wk })}</span></div>
+    <div class="stat"><span class="label">${t("statStreak")}</span><span class="big num">${streakOf(days, "pomos")}</span><span class="sub">${t("statStreakSub")}</span></div>
+    <div class="stat"><span class="label">${t("statCheckins")}</span><span class="big num">${streakOf(days, "checked_in")}</span><span class="sub">${t("statCheckinsSub", { mo, d: moDays })}</span></div>
   </div>
-  <div class="panel"><h2>Esta semana</h2><div class="week">${week}</div></div>
-  <div class="panel"><h2>Últimas 20 semanas</h2>
-    <div class="heat-wrap"><div class="heat" role="img" aria-label="Pomodoros por día en las últimas 20 semanas">${heat}</div></div>
-    <div class="legend">0 <i style="background:var(--h0)"></i><i style="background:var(--h1)"></i><i style="background:var(--h2)"></i><i style="background:var(--h3)"></i><i style="background:var(--h4)"></i> 12+ pomodoros</div>
+  <div class="panel"><h2>${t("thisWeek")}</h2><div class="week">${week}</div></div>
+  <div class="panel"><h2>${t("last20")}</h2>
+    <div class="heat-wrap"><div class="heat" role="img" aria-label="${t("heatLabel")}">${heat}</div></div>
+    <div class="legend">0 <i style="background:var(--h0)"></i><i style="background:var(--h1)"></i><i style="background:var(--h2)"></i><i style="background:var(--h3)"></i><i style="background:var(--h4)"></i> ${t("legendMax")}</div>
   </div>`;
 }
+const ackChip = (q, emoji = "") => `<a class="ack" href="${profileLink(q)}">${avatar(q, "xs")}${esc(q.display_name)}${emoji ? " " + esc(emoji) : ""}</a>`;
 
 /* =========================================================
    Vista: perfil público
    ========================================================= */
 async function viewProfile(rt, username) {
-  app.innerHTML = `<p class="empty">Cargando perfil…</p>`;
+  app.innerHTML = `<p class="empty">${t("loadingProfile")}</p>`;
   const { data: p } = await sb.from("profiles").select("*").eq("username", username).maybeSingle();
   if (!alive(rt)) return;
-  if (!p) { app.innerHTML = `<div class="panel"><h2>No existe @${esc(username)}</h2><p><a href="#/">Volver al inicio</a></p></div>`; return; }
+  if (!p) { app.innerHTML = `<div class="panel"><h2>${t("noUser", { u: esc(username) })}</h2><p><a href="#/">${t("backHome")}</a></p></div>`; return; }
   const since = dkey(addDays(mondayOf(new Date()), -19 * 7));
   const [daysR, relR, acksR] = await Promise.all([
     sb.from("days").select("*").eq("user_id", p.id).gte("day", since),
@@ -375,18 +401,18 @@ async function viewProfile(rt, username) {
 
   const isMe = myId() === p.id;
   const myRel = myId() && !isMe ? rels.find(r => r.requester === myId() || r.addressee === myId()) : null;
-  const nb = buddyIds.length, t = days[today()] || {};
+  const nb = buddyIds.length, td = days[today()] || {};
   let action = "";
   if (S.me && !isMe) {
-    if (!myRel) action = `<button class="btn primary" id="askBuddy">Pedir ser buddy</button>`;
-    else if (myRel.status === "accepted") action = `<span class="pill ok">Sois buddies</span>`;
-    else if (myRel.requester === myId()) action = `<span class="pill none">Solicitud enviada</span>`;
-    else action = `<a class="btn primary" href="#/buddies">Responder a su solicitud</a>`;
-  } else if (!S.session) action = `<a class="btn" href="#/">Crear mi cuenta</a>`;
+    if (!myRel) action = `<button class="btn primary" id="askBuddy">${t("askBuddy")}</button>`;
+    else if (myRel.status === "accepted") action = `<span class="pill ok">${t("areBuddies")}</span>`;
+    else if (myRel.requester === myId()) action = `<span class="pill none">${t("requestSent")}</span>`;
+    else action = `<a class="btn primary" href="#/buddies">${t("answerRequest")}</a>`;
+  } else if (!S.session) action = `<a class="btn" href="#/">${t("createMine")}</a>`;
 
   app.innerHTML = `
-  ${isMe ? `<div class="notice ok row between"><span>Así ven los demás tu perfil. Comparte el enlace para que te sigan la pista.</span>
-     <button class="btn small" id="copyLink">Copiar enlace</button></div>` : ""}
+  ${isMe ? `<div class="notice ok row between"><span>${t("ownNotice")}</span>
+     <button class="btn small" id="copyLink">${t("copyLink")}</button></div>` : ""}
   <div class="phead">
     ${avatar(p)}
     <div style="min-width:0">
@@ -394,41 +420,41 @@ async function viewProfile(rt, username) {
       <div class="handle">@${esc(p.username)}</div>
       ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ""}
       <div class="chips">
-        ${nb >= MIN_BUDDIES ? `<span class="pill ok">Equipo completo · ${nb} buddies</span>` : `<span class="pill part">Buscando buddies · ${nb}/${MIN_BUDDIES}</span>`}
-        ${p.start_time ? `<span class="pill none">Empieza a las ${esc(p.start_time)}</span>` : ""}
-        ${t.checked_in ? `<span class="pill ok">Check-in de hoy hecho</span>` : `<span class="pill none">Sin check-in hoy</span>`}
+        ${nb >= MIN_BUDDIES ? `<span class="pill ok">${t("teamFull", { n: nb })}</span>` : `<span class="pill part">${t("teamLooking", { n: nb, min: MIN_BUDDIES })}</span>`}
+        ${p.start_time ? `<span class="pill none">${t("startsAt", { t: esc(p.start_time) })}</span>` : ""}
+        ${td.checked_in ? `<span class="pill ok">${t("checkinToday")}</span>` : `<span class="pill none">${t("noCheckinToday")}</span>`}
       </div>
     </div>
   </div>
   ${action ? `<div class="row">${action}</div>` : ""}
   <div class="panel">
-    <h2>Hoy</h2>
-    ${t.note ? `<p class="checkin-note">${esc(t.note)}</p>` : `<p class="empty">Todavía no ha escrito su nota de hoy.</p>`}
-    <div class="label" style="margin:14px 0 8px">Vistos de sus buddies hoy</div>
-    ${acks.length ? `<div class="acks">${acks.map(a => { const q = people[a.from_user]; return q ? `<a class="ack" href="${profileLink(q)}">${avatar(q, "xs")}${esc(q.display_name)} ${esc(a.emoji)}</a>` : ""; }).join("")}</div>`
-      : `<p class="empty">Nadie le ha dado el visto todavía.</p>`}
+    <h2>${t("today")}</h2>
+    ${td.note ? `<p class="checkin-note">${esc(td.note)}</p>` : `<p class="empty">${t("noNoteYet")}</p>`}
+    <div class="label" style="margin:14px 0 8px">${t("acksToday")}</div>
+    ${acks.length ? `<div class="acks">${acks.map(a => people[a.from_user] ? ackChip(people[a.from_user], a.emoji) : "").join("")}</div>`
+      : `<p class="empty">${t("noAcksYet")}</p>`}
   </div>
   ${progressHTML(days)}
-  <div class="panel"><h2>Buddies</h2>
-    ${nb ? `<div class="acks">${buddyIds.map(id => people[id]).filter(Boolean).map(q => `<a class="ack" href="${profileLink(q)}">${avatar(q, "xs")}${esc(q.display_name)}</a>`).join("")}</div>`
-      : `<p class="empty">Aún no tiene buddies.</p>`}
+  <div class="panel"><h2>${t("buddies")}</h2>
+    ${nb ? `<div class="acks">${buddyIds.map(id => people[id]).filter(Boolean).map(q => ackChip(q)).join("")}</div>`
+      : `<p class="empty">${t("noBuddiesYet")}</p>`}
   </div>`;
   S.title = `${p.display_name} · Focus Mastery`; renderTimer();
   $("#copyLink")?.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(location.href); toast("Enlace copiado"); } catch { toast(location.href); }
+    try { await navigator.clipboard.writeText(location.href); toast(t("linkCopied")); } catch { toast(location.href); }
   });
   $("#askBuddy")?.addEventListener("click", async () => {
     const { error } = await sb.from("buddies").insert({ requester: myId(), addressee: p.id });
-    if (failed(error, error?.code === "23505" ? "Ya hay una solicitud entre vosotros." : undefined)) return;
-    toast("Solicitud enviada"); route();
+    if (failed(error, error?.code === "23505" ? t("alreadyRequest") : undefined)) return;
+    toast(t("requestSent")); route();
   });
 }
 
 /* =========================================================
-   Vista: buddies (la "red social")
+   Vista: buddies
    ========================================================= */
 async function viewBuddies(rt) {
-  app.innerHTML = `<p class="empty">Cargando buddies…</p>`;
+  app.innerHTML = `<p class="empty">${t("loadingBuddies")}</p>`;
   const me = myId(), tk = today(), monday = dkey(mondayOf(new Date()));
   const { data: rels } = await sb.from("buddies").select("*").or(`requester.eq.${me},addressee.eq.${me}`);
   if (!alive(rt)) return;
@@ -444,7 +470,8 @@ async function viewBuddies(rt) {
     sb.from("check_acks").select("*").eq("day", tk).or(`from_user.eq.${me},to_user.eq.${me}`),
   ]);
   if (!alive(rt)) return;
-  S.pendingIn = incoming.length; $("#navBadge") && ($("#navBadge").hidden = !incoming.length, $("#navBadge").textContent = incoming.length);
+  S.pendingIn = incoming.length;
+  const badge = $("#navBadge"); if (badge) { badge.hidden = !incoming.length; badge.textContent = incoming.length; }
   const daysBy = {}; for (const d of daysR.data || []) (daysBy[d.user_id] ||= {})[d.day] = d;
   const acks = acksR.data || [];
   const given = Object.fromEntries(acks.filter(a => a.from_user === me).map(a => [a.to_user, a.emoji]));
@@ -452,42 +479,43 @@ async function viewBuddies(rt) {
   const nb = buddyIds.length, checkedCount = buddyIds.filter(id => given[id]).length;
 
   const slots = Array.from({ length: Math.max(MIN_BUDDIES, nb) }, (_, i) => `<span class="slot ${i < nb ? "filled" : ""}"></span>`).join("");
+  const left = nb - checkedCount;
   const status = nb < MIN_BUDDIES
-    ? `<div class="notice alert"><b>Te faltan ${MIN_BUDDIES - nb} buddies.</b> Focus Mastery funciona con mínimo ${MIN_BUDDIES}. Pásales tu enlace o busca su usuario abajo.<div class="slots">${slots}</div></div>`
-    : checkedCount < nb
-      ? `<div class="notice alert"><b>Check diario: ${checkedCount}/${nb}.</b> Te falta dar el visto al día de ${nb - checkedCount} ${nb - checkedCount === 1 ? "buddy" : "buddies"}.<div class="slots">${slots}</div></div>`
-      : `<div class="notice ok"><b>Check diario completo.</b> Has revisado a tus ${nb} buddies hoy.<div class="slots">${slots}</div></div>`;
+    ? `<div class="notice alert">${t("missingBuddies", { n: MIN_BUDDIES - nb, min: MIN_BUDDIES })}<div class="slots">${slots}</div></div>`
+    : left > 0
+      ? `<div class="notice alert">${t("checkProgress", { done: checkedCount, total: nb, n: left, who: left === 1 ? t("buddyOne") : t("buddyMany") })}<div class="slots">${slots}</div></div>`
+      : `<div class="notice ok">${t("checkComplete", { n: nb })}<div class="slots">${slots}</div></div>`;
 
   const card = id => {
     const q = people[id]; if (!q) return "";
-    const d = daysBy[id] || {}, t = d[tk] || {};
+    const d = daysBy[id] || {}, td = d[tk] || {};
     const wk = weekTotal(d), mine = given[id];
     return `<article class="bcard ${mine ? "" : "todo"}">
       <div class="who">${avatar(q, "sm")}<div style="min-width:0"><a href="${profileLink(q)}">${esc(q.display_name)}</a><div class="handle muted" style="font-size:12px">@${esc(q.username)}</div></div></div>
-      <div class="nums"><span><strong class="num">${t.pomos || 0}</strong>hoy</span><span><strong class="num">${wk}</strong>/ ${WEEK_TARGET} semana</span><span>${goalPill(t)}</span></div>
-      ${t.checked_in ? (t.note ? `<p class="checkin-note" style="font-size:14px">${esc(t.note)}</p>` : `<p class="muted" style="margin:0">Check-in hecho, sin nota.</p>`) : `<p class="muted" style="margin:0">Aún no ha hecho su check-in de hoy.</p>`}
-      <div><div class="label" style="margin-bottom:6px">${mine ? "Le has dado el visto" : "Dale el visto de hoy"}</div>
-        <div class="emojis" data-to="${id}">${EMOJIS.map(e => `<button type="button" aria-pressed="${mine === e}" data-emoji="${e}" aria-label="Visto con ${e}">${e}</button>`).join("")}</div></div>
+      <div class="nums"><span><strong class="num">${td.pomos || 0}</strong>${t("cardToday")}</span><span><strong class="num">${wk}</strong>${t("cardWeek", { n: WEEK_TARGET })}</span><span>${goalPill(td)}</span></div>
+      ${td.checked_in ? (td.note ? `<p class="checkin-note" style="font-size:14px">${esc(td.note)}</p>` : `<p class="muted" style="margin:0">${t("checkinNoNote")}</p>`) : `<p class="muted" style="margin:0">${t("noCheckinYet")}</p>`}
+      <div><div class="label" style="margin-bottom:6px">${mine ? t("youAcked") : t("giveAck")}</div>
+        <div class="emojis" data-to="${id}">${EMOJIS.map(e => `<button type="button" aria-pressed="${mine === e}" data-emoji="${e}" aria-label="${t("ackWith", { e })}">${e}</button>`).join("")}</div></div>
     </article>`;
   };
 
   app.innerHTML = `
-  <div class="row between"><h1 style="font-size:32px">Tus buddies</h1><a class="btn" href="#/yo">Ver mi perfil público</a></div>
+  <div class="row between"><h1 style="font-size:32px">${t("yourBuddies")}</h1><a class="btn" href="#/yo">${t("seeMyProfile")}</a></div>
   ${status}
-  ${received.length ? `<div class="panel"><h2>Te han dado el visto hoy</h2><div class="acks">${received.map(a => { const q = people[a.from_user]; return q ? `<a class="ack" href="${profileLink(q)}">${avatar(q, "xs")}${esc(q.display_name)} ${esc(a.emoji)}</a>` : ""; }).join("")}</div></div>` : ""}
+  ${received.length ? `<div class="panel"><h2>${t("ackedYouToday")}</h2><div class="acks">${received.map(a => people[a.from_user] ? ackChip(people[a.from_user], a.emoji) : "").join("")}</div></div>` : ""}
   ${nb ? `<div class="feed">${buddyIds.sort((a, b) => !!given[a] - !!given[b]).map(card).join("")}</div>` : ""}
-  ${incoming.length ? `<div class="panel"><h2>Quieren ser tus buddies</h2>${incoming.map(r => { const q = people[r.requester]; return q ? `<div class="req">${avatar(q, "sm")}<div class="grow"><a href="${profileLink(q)}">${esc(q.display_name)}</a> <span class="muted">@${esc(q.username)}</span></div>
-      <button class="btn primary small" data-accept="${r.id}">Aceptar</button><button class="btn ghost small" data-remove="${r.id}">Rechazar</button></div>` : ""; }).join("")}</div>` : ""}
+  ${incoming.length ? `<div class="panel"><h2>${t("wantBuddy")}</h2>${incoming.map(r => { const q = people[r.requester]; return q ? `<div class="req">${avatar(q, "sm")}<div class="grow"><a href="${profileLink(q)}">${esc(q.display_name)}</a> <span class="muted">@${esc(q.username)}</span></div>
+      <button class="btn primary small" data-accept="${r.id}">${t("accept")}</button><button class="btn ghost small" data-remove="${r.id}">${t("reject")}</button></div>` : ""; }).join("")}</div>` : ""}
   <div class="grid2">
-    <div class="panel"><h2>Añadir buddy</h2>
-      <form class="add" id="addBuddy"><input type="text" id="buddyUser" placeholder="@usuario" aria-label="Usuario del buddy"><button class="btn primary">Enviar solicitud</button></form>
-      <p class="hint" style="margin-top:10px">¿Aún no tienen cuenta? Mándales tu enlace: <code id="myLink"></code></p>
+    <div class="panel"><h2>${t("addBuddy")}</h2>
+      <form class="add" id="addBuddy"><input type="text" id="buddyUser" placeholder="${t("userPh")}" aria-label="${t("buddyUserLabel")}"><button class="btn primary">${t("sendRequest")}</button></form>
+      <p class="hint" style="margin-top:10px">${t("noAccountYet")} <code id="myLink"></code></p>
     </div>
-    <div class="panel"><h2>Solicitudes enviadas</h2>
-      ${outgoing.length ? outgoing.map(r => { const q = people[r.addressee]; return q ? `<div class="req">${avatar(q, "sm")}<div class="grow"><a href="${profileLink(q)}">${esc(q.display_name)}</a></div><button class="btn ghost small" data-remove="${r.id}">Cancelar</button></div>` : ""; }).join("") : `<p class="empty">Ninguna pendiente.</p>`}
+    <div class="panel"><h2>${t("sentRequests")}</h2>
+      ${outgoing.length ? outgoing.map(r => { const q = people[r.addressee]; return q ? `<div class="req">${avatar(q, "sm")}<div class="grow"><a href="${profileLink(q)}">${esc(q.display_name)}</a></div><button class="btn ghost small" data-remove="${r.id}">${t("cancel")}</button></div>` : ""; }).join("") : `<p class="empty">${t("nonePending")}</p>`}
     </div>
   </div>
-  ${nb ? `<div class="panel"><h2>Gestionar</h2>${accepted.map(r => { const q = people[other(r)]; return q ? `<div class="req">${avatar(q, "xs")}<div class="grow">${esc(q.display_name)}</div><button class="btn ghost small" data-remove="${r.id}" data-confirm>Dejar de ser buddies</button></div>` : ""; }).join("")}</div>` : ""}`;
+  ${nb ? `<div class="panel"><h2>${t("manage")}</h2>${accepted.map(r => { const q = people[other(r)]; return q ? `<div class="req">${avatar(q, "xs")}<div class="grow">${esc(q.display_name)}</div><button class="btn ghost small" data-remove="${r.id}" data-confirm data-orig="${t("unbuddy")}">${t("unbuddy")}</button></div>` : ""; }).join("")}</div>` : ""}`;
 
   $("#myLink").textContent = `${location.origin}${location.pathname}#/u/${S.me.username}`;
   app.querySelectorAll(".emojis").forEach(box => box.addEventListener("click", async e => {
@@ -497,22 +525,24 @@ async function viewBuddies(rt) {
   }));
   app.querySelectorAll("[data-accept]").forEach(b => b.addEventListener("click", async () => {
     const { error } = await sb.from("buddies").update({ status: "accepted" }).eq("id", b.dataset.accept);
-    if (!failed(error)) { toast("¡Nuevo buddy!"); route(); }
+    if (!failed(error)) { toast(t("newBuddy")); route(); }
   }));
-  app.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", async () => {
-    if (b.hasAttribute("data-confirm") && !b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "¿Seguro?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Dejar de ser buddies"; }, 3000); return; }
-    const { error } = await sb.from("buddies").delete().eq("id", b.dataset.remove);
-    if (!failed(error)) route();
+  app.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => {
+    const remove = async () => {
+      const { error } = await sb.from("buddies").delete().eq("id", b.dataset.remove);
+      if (!failed(error)) route();
+    };
+    if (b.hasAttribute("data-confirm")) armDelete(b, t("sure"), remove); else remove();
   }));
   $("#addBuddy").addEventListener("submit", async e => {
     e.preventDefault();
     const u = $("#buddyUser").value.trim().replace(/^@/, "").toLowerCase(); if (!u) return;
-    if (u === S.me.username) { toast("Ese eres tú 🙂"); return; }
+    if (u === S.me.username) { toast(t("thatsYou")); return; }
     const { data: q } = await sb.from("profiles").select("id").eq("username", u).maybeSingle();
-    if (!q) { toast(`No existe @${u}. ¿Ya se ha creado la cuenta?`); return; }
+    if (!q) { toast(t("noSuchUser", { u })); return; }
     const { error } = await sb.from("buddies").insert({ requester: me, addressee: q.id });
-    if (failed(error, error?.code === "23505" ? "Ya hay una solicitud entre vosotros." : undefined)) return;
-    toast("Solicitud enviada"); route();
+    if (failed(error, error?.code === "23505" ? t("alreadyRequest") : undefined)) return;
+    toast(t("requestSent")); route();
   });
 }
 
@@ -542,11 +572,11 @@ let audio;
 function beep() {
   try {
     audio ||= new AudioContext();
-    [0, 0.25, 0.5].forEach(t => {
+    [0, 0.25, 0.5].forEach(off => {
       const o = audio.createOscillator(), g = audio.createGain();
-      o.frequency.value = 880; g.gain.setValueAtTime(0.15, audio.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + t + 0.2);
-      o.connect(g).connect(audio.destination); o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.22);
+      o.frequency.value = 880; g.gain.setValueAtTime(0.15, audio.currentTime + off);
+      g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + off + 0.2);
+      o.connect(g).connect(audio.destination); o.start(audio.currentTime + off); o.stop(audio.currentTime + off + 0.22);
     });
   } catch {}
 }
@@ -557,28 +587,28 @@ async function finish() {
   timer.running = false; timer.mode = wasWork ? "break" : "work"; timer.remaining = fullMs(); saveTimer(); beep();
   if (wasWork && S.me) {
     const { error } = await sb.rpc("add_pomodoro", { p_day: dkey(startedAt), p_first_at: `${pad(startedAt.getHours())}:${pad(startedAt.getMinutes())}` });
-    if (!failed(error, "No se pudo guardar el pomodoro. Revisa la conexión.")) {
+    if (!failed(error, t("errPomo"))) {
       if (timer.taskId) {
-        const { data: t } = await sb.from("tasks").select("spent,col").eq("id", timer.taskId).maybeSingle();
-        if (t) await sb.from("tasks").update({ spent: t.spent + 1, col: t.col === "todo" ? "doing" : t.col }).eq("id", timer.taskId);
+        const { data: task } = await sb.from("tasks").select("spent,col").eq("id", timer.taskId).maybeSingle();
+        if (task) await sb.from("tasks").update({ spent: task.spent + 1, col: task.col === "todo" ? "doing" : task.col }).eq("id", timer.taskId);
       }
-      toast("🍅 ¡Pomodoro hecho! 5 minutos de descanso.");
+      toast(t("pomoDone"));
     }
     if (parseRoute().view === "hoy") route();
-  } else if (!wasWork) toast("Descanso terminado. ¿Otro pomodoro?");
+  } else if (!wasWork) toast(t("breakDone"));
   finishing = false;
   renderTimer();
 }
 function renderTimer() {
   const clock = $("#tClock");
   const ms = leftMs(), s = Math.ceil(ms / 1000), txt = `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
-  document.title = timer.running ? `${txt} · ${timer.mode === "work" ? "Foco" : "Descanso"}` : S.title;
+  document.title = timer.running ? `${txt} · ${timer.mode === "work" ? t("focus") : t("break")}` : S.title;
   if (!clock) return;
   clock.textContent = txt;
-  $("#tMode").textContent = timer.mode === "work" ? "Foco" : "Descanso";
+  $("#tMode").textContent = timer.mode === "work" ? t("focus") : t("break");
   $("#timer").classList.toggle("brk", timer.mode !== "work");
   $("#ringPrg").style.strokeDashoffset = (276.46 * (1 - ms / fullMs())).toFixed(2);
-  $("#tStart").textContent = timer.running ? "Pausar" : ms < fullMs() ? "Seguir" : timer.mode === "work" ? "Empezar" : "Empezar descanso";
+  $("#tStart").textContent = timer.running ? t("pause") : ms < fullMs() ? t("resume") : timer.mode === "work" ? t("start") : t("startBreak");
 }
 setInterval(() => {
   if (!timer.running) return;
@@ -590,7 +620,7 @@ setInterval(() => {
    Vista: Hoy (privado)
    ========================================================= */
 async function viewHoy(rt) {
-  app.innerHTML = `<p class="empty">Cargando…</p>`;
+  app.innerHTML = `<p class="empty">${t("loading")}</p>`;
   const [dayR, goalsR, tasksR, acksR] = await Promise.all([
     sb.from("days").select("*").eq("user_id", myId()).eq("day", today()).maybeSingle(),
     sb.from("goals").select("*").order("created_at"),
@@ -602,8 +632,8 @@ async function viewHoy(rt) {
   const acks = acksR.data || [];
   const people = await profilesByIds(acks.map(a => a.from_user));
   if (!alive(rt)) return;
-  const t = S.todayRow || {};
-  const p = t.pomos || 0;
+  const td = S.todayRow || {};
+  const p = td.pomos || 0;
 
   app.innerHTML = `
   <div class="grid2">
@@ -611,54 +641,52 @@ async function viewHoy(rt) {
       <div class="timer" id="timer">
         <div class="ring">
           <svg viewBox="0 0 100 100" aria-hidden="true"><circle class="trk" cx="50" cy="50" r="44"/><circle class="prg" id="ringPrg" cx="50" cy="50" r="44" stroke-dasharray="276.46" stroke-dashoffset="0"/></svg>
-          <div class="t"><span class="mode" id="tMode">Foco</span><span class="clock num" id="tClock">25:00</span></div>
+          <div class="t"><span class="mode" id="tMode">${t("focus")}</span><span class="clock num" id="tClock">25:00</span></div>
         </div>
-        <label class="row center" style="width:100%"><span class="label">Trabajando en</span>
-          <select id="tTask" style="max-width:100%;flex:1 1 200px"><option value="">Sin tarea concreta</option>
+        <label class="row center" style="width:100%"><span class="label">${t("workingOn")}</span>
+          <select id="tTask" style="max-width:100%;flex:1 1 200px"><option value="">${t("noTask")}</option>
             ${S.tasks.map(k => `<option value="${k.id}">${esc((k.project ? k.project + " · " : "") + k.title)}</option>`).join("")}</select></label>
         <div class="row center">
-          <button class="btn primary" id="tStart">Empezar</button>
-          <button class="btn" id="tReset">Reiniciar</button>
-          <button class="btn ghost" id="tSkip">Saltar</button>
+          <button class="btn primary" id="tStart">${t("start")}</button>
+          <button class="btn" id="tReset">${t("reset")}</button>
+          <button class="btn ghost" id="tSkip">${t("skip")}</button>
         </div>
-        <div class="today-count">Hoy: <strong class="num">${p}</strong> pomodoros · objetivo ${DAY_MIN}–${DAY_MAX}${S.me.start_time ? ` · empiezas a las ${esc(S.me.start_time)}` : ""}</div>
-        ${p >= DAY_MAX + 2 ? `<div class="warn">Ya llevas más de 6 h. Recuerda tu anti-objetivo: cierra y dedica tiempo a tu vida.</div>`
-          : p >= DAY_MAX ? `<div class="warn">Objetivo diario alcanzado. Lo que sigue es opcional.</div>` : ""}
+        <div class="today-count">${t("todayCount", { p, min: DAY_MIN, max: DAY_MAX })}${S.me.start_time ? t("youStartAt", { t: esc(S.me.start_time) }) : ""}</div>
+        ${p >= DAY_MAX + 2 ? `<div class="warn">${t("overWarn")}</div>` : p >= DAY_MAX ? `<div class="warn">${t("dailyReached")}</div>` : ""}
       </div>
     </div>
     <div class="panel">
       <div class="row between" style="margin-bottom:4px">
-        <h2 style="margin:0">Objetivos</h2>
-        <div class="seg" id="gSeg" role="group" aria-label="Periodo">
-          <button type="button" data-scope="day">Hoy</button><button type="button" data-scope="week">Semana</button><button type="button" data-scope="month">Mes</button>
+        <h2 style="margin:0">${t("goals")}</h2>
+        <div class="seg" id="gSeg" role="group" aria-label="${t("period")}">
+          <button type="button" data-scope="day">${t("scopeDay")}</button><button type="button" data-scope="week">${t("scopeWeek")}</button><button type="button" data-scope="month">${t("scopeMonth")}</button>
         </div>
       </div>
       <ul class="list" id="gList"></ul>
-      <form class="add" id="gForm"><input type="text" id="gInput" placeholder="Nuevo objetivo…" maxlength="200" aria-label="Nuevo objetivo"><button class="btn">Añadir</button></form>
-      <p class="privnote" style="margin-top:10px">🔒 El texto es privado. En tu perfil solo se ve “2/3 objetivos de hoy”.</p>
+      <form class="add" id="gForm"><input type="text" id="gInput" placeholder="${t("newGoal")}" maxlength="200" aria-label="${t("newGoalLabel")}"><button class="btn">${t("add")}</button></form>
+      <p class="privnote" style="margin-top:10px">${t("goalsPrivate")}</p>
     </div>
   </div>
   <div class="panel">
-    <div class="row between"><h2 style="margin:0">Check-in de hoy</h2>${t.checked_in ? `<span class="pill ok">Hecho</span>` : `<span class="pill part">Pendiente</span>`}</div>
-    <p class="hint" style="margin:8px 0 12px">Una frase pública para tus buddies: qué hiciste, qué te costó, qué harás mañana.</p>
+    <div class="row between"><h2 style="margin:0">${t("checkinTitle")}</h2>${td.checked_in ? `<span class="pill ok">${t("done")}</span>` : `<span class="pill part">${t("pending")}</span>`}</div>
+    <p class="hint" style="margin:8px 0 12px">${t("checkinHint")}</p>
     <form id="ciForm" style="display:grid;gap:10px">
-      <textarea id="ciNote" maxlength="280" rows="2" placeholder="Hoy 6 🍅 en el capítulo 2. Me distraje con el móvil a media mañana.">${esc(t.note || "")}</textarea>
-      <div class="row"><button class="btn primary">${t.checked_in ? "Actualizar check-in" : "Hacer check-in"}</button><span class="hint">Se publica en tu perfil junto a tus pomodoros.</span></div>
+      <textarea id="ciNote" maxlength="280" rows="2" placeholder="${t("checkinPh")}">${esc(td.note || "")}</textarea>
+      <div class="row"><button class="btn primary">${td.checked_in ? t("checkinUpdate") : t("checkinDo")}</button><span class="hint">${t("checkinPublic")}</span></div>
     </form>
-    <div class="label" style="margin:16px 0 8px">Te han dado el visto</div>
-    ${acks.length ? `<div class="acks">${acks.map(a => { const q = people[a.from_user]; return q ? `<a class="ack" href="${profileLink(q)}">${avatar(q, "xs")}${esc(q.display_name)} ${esc(a.emoji)}</a>` : ""; }).join("")}</div>` : `<p class="empty">Todavía nadie. <a href="#/buddies">Revisa a tus buddies</a> y ellos te revisarán a ti.</p>`}
+    <div class="label" style="margin:16px 0 8px">${t("ackedYou")}</div>
+    ${acks.length ? `<div class="acks">${acks.map(a => people[a.from_user] ? ackChip(people[a.from_user], a.emoji) : "").join("")}</div>` : `<p class="empty">${t("nobodyYet")}</p>`}
   </div>
   <div class="panel">
-    <h2>Tu perfil</h2>
+    <h2>${t("yourProfile")}</h2>
     <form id="pfForm" class="grid2" style="gap:14px">
-      <div class="field"><label class="label" for="pfName">Nombre visible</label><input type="text" id="pfName" maxlength="60" value="${esc(S.me.display_name)}"></div>
-      <div class="field"><label class="label" for="pfStart">Hora de inicio diaria</label><input type="time" id="pfStart" value="${esc(S.me.start_time || "")}"></div>
-      <div class="field" style="grid-column:1/-1"><label class="label" for="pfBio">Bio</label><input type="text" id="pfBio" maxlength="280" value="${esc(S.me.bio || "")}" placeholder="Doctoranda en… Mi meta: 4–6 h de foco al día."></div>
-      <div class="row"><button class="btn">Guardar perfil</button><a class="btn ghost" href="#/contrasena">Cambiar contraseña</a></div>
+      <div class="field"><label class="label" for="pfName">${t("displayName")}</label><input type="text" id="pfName" maxlength="60" value="${esc(S.me.display_name)}"></div>
+      <div class="field"><label class="label" for="pfStart">${t("dailyStart")}</label><input type="time" id="pfStart" value="${esc(S.me.start_time || "")}"></div>
+      <div class="field" style="grid-column:1/-1"><label class="label" for="pfBio">${t("bio")}</label><input type="text" id="pfBio" maxlength="280" value="${esc(S.me.bio || "")}" placeholder="${t("bioPh")}"></div>
+      <div class="row"><button class="btn">${t("saveProfile")}</button><a class="btn ghost" href="#/contrasena">${t("changePw")}</a></div>
     </form>
   </div>`;
 
-  // timer
   const sel = $("#tTask"); sel.value = S.tasks.some(k => k.id === timer.taskId) ? timer.taskId : "";
   sel.addEventListener("change", () => { timer.taskId = sel.value; saveTimer(); });
   $("#tStart").addEventListener("click", () => {
@@ -670,7 +698,6 @@ async function viewHoy(rt) {
   $("#tSkip").addEventListener("click", () => { timer.running = false; timer.mode = timer.mode === "work" ? "break" : "work"; timer.remaining = fullMs(); saveTimer(); renderTimer(); });
   renderTimer();
 
-  // goals
   $("#gSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { S.gScope = b.dataset.scope; renderGoals(); } });
   $("#gForm").addEventListener("submit", async e => {
     e.preventDefault(); const text = $("#gInput").value.trim(); if (!text) return;
@@ -681,19 +708,17 @@ async function viewHoy(rt) {
   });
   renderGoals();
 
-  // check-in
   $("#ciForm").addEventListener("submit", async e => {
     e.preventDefault();
     const ok = await upsertToday({ checked_in: true, checkin_at: new Date().toISOString(), note: $("#ciNote").value.trim() || null });
-    if (ok) { toast("Check-in hecho. Ahora revisa a tus buddies."); route(); }
+    if (ok) { toast(t("checkinSaved")); route(); }
   });
 
-  // profile
   $("#pfForm").addEventListener("submit", async e => {
     e.preventDefault();
     const patch = { display_name: $("#pfName").value.trim() || S.me.display_name, start_time: $("#pfStart").value || null, bio: $("#pfBio").value.trim() || null };
     const { data, error } = await sb.from("profiles").update(patch).eq("id", myId()).select().single();
-    if (!failed(error)) { S.me = data; toast("Perfil guardado"); }
+    if (!failed(error)) { S.me = data; toast(t("profileSaved")); }
   });
 }
 function renderGoals() {
@@ -701,45 +726,46 @@ function renderGoals() {
   document.querySelectorAll("#gSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.scope === S.gScope));
   const per = periodFor(S.gScope);
   const gs = S.goals.filter(g => g.scope === S.gScope && g.period === per);
+  const empty = { day: t("emptyDay"), week: t("emptyWeek"), month: t("emptyMonth") }[S.gScope];
   list.innerHTML = gs.length ? gs.map(g => `<li class="${g.done ? "done" : ""}"><input type="checkbox" id="g-${g.id}" data-id="${g.id}" ${g.done ? "checked" : ""}>
-      <span>${esc(g.text)}</span><button type="button" class="btn ghost" data-del="${g.id}" aria-label="Borrar objetivo">✕</button></li>`).join("")
-    : `<li class="empty">${S.gScope === "day" ? "Escribe 1–3 objetivos concretos para hoy." : S.gScope === "week" ? "¿Qué tiene que estar hecho este domingo?" : "¿Qué quieres haber terminado este mes?"}</li>`;
+      <span>${esc(g.text)}</span><button type="button" class="btn ghost" data-del="${g.id}" data-orig="✕" aria-label="${t("deleteGoal")}">✕</button></li>`).join("")
+    : `<li class="empty">${empty}</li>`;
   list.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", async () => {
     const g = S.goals.find(x => x.id === cb.dataset.id); g.done = cb.checked; renderGoals();
     const { error } = await sb.from("goals").update({ done: g.done }).eq("id", g.id);
     if (!failed(error) && g.scope === "day") syncTodayGoals();
   }));
-  list.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "¿Borrar?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "✕"; }, 2500); return; }
+  list.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => armDelete(b, t("confirmDelete"), async () => {
     const g = S.goals.find(x => x.id === b.dataset.del);
     const { error } = await sb.from("goals").delete().eq("id", g.id);
     if (failed(error)) return;
     S.goals = S.goals.filter(x => x !== g); renderGoals();
     if (g.scope === "day") syncTodayGoals();
-  }));
+  })));
 }
 
 /* =========================================================
    Vista: Tablero (privado)
    ========================================================= */
-const COLS = [["todo", "Por hacer"], ["doing", "En curso"], ["done", "Hecho"]];
+const COLS = ["todo", "doing", "done"];
+const colLabel = c => ({ todo: t("colTodo"), doing: t("colDoing"), done: t("colDone") }[c]);
 async function viewBoard(rt) {
-  app.innerHTML = `<p class="empty">Cargando tablero…</p>`;
+  app.innerHTML = `<p class="empty">${t("loadingBoard")}</p>`;
   const { data, error } = await sb.from("tasks").select("*").order("created_at");
   if (!alive(rt)) return;
-  if (failed(error, "No se pudo cargar el tablero.")) return;
+  if (failed(error, t("errBoard"))) return;
   S.tasks = data || [];
   app.innerHTML = `
   <div class="panel">
     <form class="add" id="kForm">
-      <input type="text" id="kTitle" placeholder="Nueva tarea del doctorado…" maxlength="200" aria-label="Título de la tarea">
-      <input type="text" id="kProj" placeholder="Proyecto (capítulo 2, paper…)" maxlength="40" style="flex:0 1 220px" aria-label="Proyecto">
-      <label class="row" style="gap:6px"><span class="label">🍅 est.</span><input type="number" id="kEst" min="0" max="500" value="4" style="width:70px"></label>
-      <button class="btn primary">Añadir</button>
+      <input type="text" id="kTitle" placeholder="${t("newTask")}" maxlength="200" aria-label="${t("taskTitle")}">
+      <input type="text" id="kProj" placeholder="${t("projectPh")}" maxlength="40" style="flex:0 1 220px" aria-label="${t("project")}">
+      <label class="row" style="gap:6px"><span class="label">${t("estimate")}</span><input type="number" id="kEst" min="0" max="500" value="4" style="width:70px"></label>
+      <button class="btn primary">${t("add")}</button>
     </form>
-    <p class="privnote" style="margin-top:10px">🔒 Solo tú ves este tablero.</p>
+    <p class="privnote" style="margin-top:10px">${t("boardPrivate")}</p>
   </div>
-  <div class="board" id="board">${COLS.map(([c, l]) => `<div class="col" data-col="${c}"><h3>${l} <span class="num" data-count></span></h3></div>`).join("")}</div>`;
+  <div class="board" id="board">${COLS.map(c => `<div class="col" data-col="${c}"><h3>${colLabel(c)} <span class="num" data-count></span></h3></div>`).join("")}</div>`;
   $("#kForm").addEventListener("submit", async e => {
     e.preventDefault(); const title = $("#kTitle").value.trim(); if (!title) return;
     const row = { title, project: $("#kProj").value.trim() || null, estimate: Math.max(0, parseInt($("#kEst").value) || 0) };
@@ -755,28 +781,28 @@ async function viewBoard(rt) {
   renderBoard();
 }
 async function moveTask(id, col) {
-  const t = S.tasks.find(x => x.id === id); if (!t || t.col === col) return;
-  const prev = t.col; t.col = col; renderBoard();
+  const task = S.tasks.find(x => x.id === id); if (!task || task.col === col) return;
+  const prev = task.col; task.col = col; renderBoard();
   const { error } = await sb.from("tasks").update({ col }).eq("id", id);
-  if (failed(error)) { t.col = prev; renderBoard(); }
+  if (failed(error)) { task.col = prev; renderBoard(); }
 }
 function renderBoard() {
-  for (const [c] of COLS) {
+  for (const c of COLS) {
     const el = document.querySelector(`.col[data-col="${c}"]`); if (!el) return;
     el.querySelectorAll(".card,.empty").forEach(n => n.remove());
-    const ts = S.tasks.filter(t => t.col === c);
+    const ts = S.tasks.filter(x => x.col === c);
     el.querySelector("[data-count]").textContent = ts.length;
-    if (!ts.length) el.insertAdjacentHTML("beforeend", `<p class="empty">${c === "todo" ? "Añade la primera tarea arriba." : "Arrastra tareas aquí."}</p>`);
-    const i = COLS.findIndex(([x]) => x === c);
-    for (const t of ts) {
-      el.insertAdjacentHTML("beforeend", `<div class="card ${timer.taskId === t.id ? "active" : ""}" draggable="true" data-id="${t.id}">
-        <div class="tt">${esc(t.title)}</div>
-        <div class="row between"><div class="meta">${t.project ? `<span class="tag">${esc(t.project)}</span>` : ""}<span class="num">🍅 ${t.spent}${t.estimate ? " / " + t.estimate : ""}</span></div>
+    if (!ts.length) el.insertAdjacentHTML("beforeend", `<p class="empty">${c === "todo" ? t("firstTask") : t("dragHere")}</p>`);
+    const i = COLS.indexOf(c);
+    for (const task of ts) {
+      el.insertAdjacentHTML("beforeend", `<div class="card ${timer.taskId === task.id ? "active" : ""}" draggable="true" data-id="${task.id}">
+        <div class="tt">${esc(task.title)}</div>
+        <div class="row between"><div class="meta">${task.project ? `<span class="tag">${esc(task.project)}</span>` : ""}<span class="num">🍅 ${task.spent}${task.estimate ? " / " + task.estimate : ""}</span></div>
         <div class="acts">
-          ${i > 0 ? `<button type="button" class="btn ghost" data-move="${COLS[i - 1][0]}" aria-label="Mover a ${COLS[i - 1][1]}">◀</button>` : ""}
-          ${i < 2 ? `<button type="button" class="btn ghost" data-move="${COLS[i + 1][0]}" aria-label="Mover a ${COLS[i + 1][1]}">▶</button>` : ""}
-          ${c !== "done" ? `<button type="button" class="btn ghost" data-focus aria-label="Trabajar en esta tarea" title="Trabajar en esta tarea">🍅</button>` : ""}
-          <button type="button" class="btn ghost" data-del aria-label="Borrar tarea">✕</button>
+          ${i > 0 ? `<button type="button" class="btn ghost" data-move="${COLS[i - 1]}" aria-label="${t("moveTo", { c: colLabel(COLS[i - 1]) })}">◀</button>` : ""}
+          ${i < 2 ? `<button type="button" class="btn ghost" data-move="${COLS[i + 1]}" aria-label="${t("moveTo", { c: colLabel(COLS[i + 1]) })}">▶</button>` : ""}
+          ${c !== "done" ? `<button type="button" class="btn ghost" data-focus aria-label="${t("workOnTask")}" title="${t("workOnTask")}">🍅</button>` : ""}
+          <button type="button" class="btn ghost" data-del data-orig="✕" aria-label="${t("deleteTask")}">✕</button>
         </div></div></div>`);
     }
   }
@@ -787,11 +813,10 @@ function renderBoard() {
     card.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => moveTask(id, b.dataset.move)));
     card.querySelector("[data-focus]")?.addEventListener("click", () => { timer.taskId = id; saveTimer(); location.hash = "#/hoy"; });
     const del = card.querySelector("[data-del]");
-    del.addEventListener("click", async () => {
-      if (!del.dataset.armed) { del.dataset.armed = "1"; del.textContent = "¿Borrar?"; setTimeout(() => { delete del.dataset.armed; del.textContent = "✕"; }, 2500); return; }
+    del.addEventListener("click", () => armDelete(del, t("confirmDelete"), async () => {
       const { error } = await sb.from("tasks").delete().eq("id", id);
-      if (!failed(error)) { S.tasks = S.tasks.filter(t => t.id !== id); renderBoard(); }
-    });
+      if (!failed(error)) { S.tasks = S.tasks.filter(x => x.id !== id); renderBoard(); }
+    }));
   });
 }
 
@@ -800,18 +825,18 @@ function renderBoard() {
    ========================================================= */
 let jTimer = null;
 async function viewJournal(rt) {
-  app.innerHTML = `<p class="empty">Cargando diario…</p>`;
+  app.innerHTML = `<p class="empty">${t("loadingJournal")}</p>`;
   const { data, error } = await sb.from("journal").select("day,text").order("day", { ascending: false });
   if (!alive(rt)) return;
-  if (failed(error, "No se pudo cargar el diario.")) return;
+  if (failed(error, t("errJournal"))) return;
   const entries = Object.fromEntries((data || []).map(j => [j.day, j.text]));
   app.innerHTML = `
   <div class="jgrid">
-    <div class="panel"><div class="label" style="margin-bottom:8px">Entradas</div><ul class="jlist" id="jList"></ul></div>
+    <div class="panel"><div class="label" style="margin-bottom:8px">${t("entries")}</div><ul class="jlist" id="jList"></ul></div>
     <div class="panel">
-      <div class="row between" style="margin-bottom:10px"><input type="date" id="jDate" aria-label="Fecha"><span class="saved" id="jSaved"></span></div>
-      <textarea id="jText" aria-label="Entrada del diario" placeholder="¿Cómo ha ido hoy? ¿Qué te distrajo? ¿Qué harás distinto mañana?"></textarea>
-      <p class="privnote" style="margin-top:8px">🔒 Solo tú lees tu diario.</p>
+      <div class="row between" style="margin-bottom:10px"><input type="date" id="jDate" aria-label="${t("date")}"><span class="saved" id="jSaved"></span></div>
+      <textarea id="jText" aria-label="${t("journalEntry")}" placeholder="${t("journalPh")}"></textarea>
+      <p class="privnote" style="margin-top:8px">${t("journalPrivate")}</p>
     </div>
   </div>`;
   const text = $("#jText");
@@ -825,9 +850,9 @@ async function viewJournal(rt) {
     if (!jTimer) return; clearTimeout(jTimer); jTimer = null;
     const day = S.jDate, value = text.value; entries[day] = value;
     const { error } = await sb.from("journal").upsert({ user_id: myId(), day, text: value, updated_at: new Date().toISOString() }, { onConflict: "user_id,day" });
-    if (!failed(error) && $("#jSaved")) { $("#jSaved").textContent = "Guardado"; renderList(); }
+    if (!failed(error) && $("#jSaved")) { $("#jSaved").textContent = t("saved"); renderList(); }
   };
-  text.addEventListener("input", () => { $("#jSaved").textContent = "Escribiendo…"; clearTimeout(jTimer); jTimer = setTimeout(() => { flush(); }, 1200); });
+  text.addEventListener("input", () => { $("#jSaved").textContent = t("typing"); clearTimeout(jTimer); jTimer = setTimeout(() => { flush(); }, 1200); });
   text.addEventListener("blur", flush);
   $("#jDate").addEventListener("change", e => { if (!e.target.value) return; flush(); S.jDate = e.target.value; load(); });
   load();
