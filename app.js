@@ -795,6 +795,20 @@ function renderBoard() {
     if (!ts.length) el.insertAdjacentHTML("beforeend", `<p class="empty">${c === "todo" ? t("firstTask") : t("dragHere")}</p>`);
     const i = COLS.indexOf(c);
     for (const task of ts) {
+      if (S.editId === task.id) {
+        el.insertAdjacentHTML("beforeend", `<form class="card editing" data-id="${task.id}">
+          <input type="text" name="title" value="${esc(task.title)}" maxlength="200" required aria-label="${t("taskTitle")}">
+          <input type="text" name="project" value="${esc(task.project || "")}" maxlength="40" placeholder="${t("projectPh")}" aria-label="${t("project")}">
+          <div class="row" style="gap:6px;flex-wrap:wrap"><span>🍅</span>
+            <input type="number" name="spent" min="0" max="500" value="${task.spent}" style="width:64px" aria-label="${t("spentLabel")}"> /
+            <input type="number" name="estimate" min="0" max="500" value="${task.estimate}" style="width:64px" aria-label="${t("estimate")}">
+          </div>
+          <div class="row" style="gap:6px;justify-content:flex-end">
+            <button type="button" class="btn small" data-cancel>${t("cancel")}</button>
+            <button class="btn small primary">${t("saveBtn")}</button>
+          </div></form>`);
+        continue;
+      }
       el.insertAdjacentHTML("beforeend", `<div class="card ${timer.taskId === task.id ? "active" : ""}" draggable="true" data-id="${task.id}">
         <div class="tt">${esc(task.title)}</div>
         <div class="row between"><div class="meta">${task.project ? `<span class="tag">${esc(task.project)}</span>` : ""}<span class="num">🍅 ${task.spent}${task.estimate ? " / " + task.estimate : ""}</span></div>
@@ -802,12 +816,32 @@ function renderBoard() {
           ${i > 0 ? `<button type="button" class="btn ghost" data-move="${COLS[i - 1]}" aria-label="${t("moveTo", { c: colLabel(COLS[i - 1]) })}">◀</button>` : ""}
           ${i < 2 ? `<button type="button" class="btn ghost" data-move="${COLS[i + 1]}" aria-label="${t("moveTo", { c: colLabel(COLS[i + 1]) })}">▶</button>` : ""}
           ${c !== "done" ? `<button type="button" class="btn ghost" data-focus aria-label="${t("workOnTask")}" title="${t("workOnTask")}">🍅</button>` : ""}
+          <button type="button" class="btn ghost" data-edit aria-label="${t("editTask")}" title="${t("editTask")}">✎</button>
           <button type="button" class="btn ghost" data-del data-orig="✕" aria-label="${t("deleteTask")}">✕</button>
         </div></div></div>`);
     }
   }
-  document.querySelectorAll(".card").forEach(card => {
+  const edit = document.querySelector(".card.editing");
+  if (edit) {
+    const id = edit.dataset.id, f = edit.elements;
+    f.title.focus();
+    edit.querySelector("[data-cancel]").addEventListener("click", () => { S.editId = null; renderBoard(); });
+    edit.addEventListener("keydown", e => { if (e.key === "Escape") { S.editId = null; renderBoard(); } });
+    edit.addEventListener("submit", async e => {
+      e.preventDefault();
+      const title = f.title.value.trim(); if (!title) return;
+      const patch = { title, project: f.project.value.trim() || null,
+        spent: Math.max(0, parseInt(f.spent.value) || 0), estimate: Math.max(0, parseInt(f.estimate.value) || 0) };
+      const { error } = await sb.from("tasks").update(patch).eq("id", id);
+      if (failed(error)) return;
+      Object.assign(S.tasks.find(x => x.id === id), patch); S.editId = null; renderBoard();
+    });
+  }
+  document.querySelectorAll(".card:not(.editing)").forEach(card => {
     const id = card.dataset.id;
+    const openEdit = () => { S.editId = id; renderBoard(); };
+    card.querySelector("[data-edit]").addEventListener("click", openEdit);
+    card.querySelector(".tt").addEventListener("dblclick", openEdit);
     card.addEventListener("dragstart", e => { card.classList.add("dragging"); e.dataTransfer.setData("text/plain", id); });
     card.addEventListener("dragend", () => card.classList.remove("dragging"));
     card.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => moveTask(id, b.dataset.move)));

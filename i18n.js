@@ -17,6 +17,9 @@ export const STRINGS = {
     confirmDelete: "¿Borrar?",
     add: "Añadir",
     cancel: "Cancelar",
+    editTask: "Editar tarea",
+    saveBtn: "Guardar",
+    spentLabel: "hechos",
     see: "Ver",
 
     // menú
@@ -268,6 +271,9 @@ export const STRINGS = {
     confirmDelete: "Delete?",
     add: "Add",
     cancel: "Cancel",
+    editTask: "Edit task",
+    saveBtn: "Save",
+    spentLabel: "done",
     see: "View",
 
     navLogin: "Log in",
