@@ -1,6 +1,6 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=10";
-import { STRINGS } from "./i18n.js?v=10";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=11";
+import { STRINGS } from "./i18n.js?v=11";
 
 /* =========================================================
    Idioma
@@ -146,7 +146,10 @@ const alive = rt => rt === S.rt;
 
 function renderNav(view) {
   const nav = $("#nav");
-  const langBtn = `<button type="button" id="langBtn" aria-label="${esc(t("langSwitchLabel"))}" title="${esc(t("langSwitchLabel"))}">${t("langSwitch")}</button>`;
+  const dark = document.documentElement.dataset.theme === "tech";
+  const themeLbl = esc(t(dark ? "themeToCalm" : "themeToTech"));
+  const langBtn = `<button type="button" id="themeBtn" aria-label="${themeLbl}" title="${themeLbl}">${dark ? "🌿" : "⌨️"}</button>` +
+    `<button type="button" id="langBtn" aria-label="${esc(t("langSwitchLabel"))}" title="${esc(t("langSwitchLabel"))}">${t("langSwitch")}</button>`;
   if (!S.session || !S.me) {
     nav.innerHTML = (S.session
       ? `<button type="button" id="logout">${t("navLogout")}</button>`
@@ -163,6 +166,10 @@ function renderNav(view) {
   }
   $("#logout")?.addEventListener("click", async () => { await sb.auth.signOut(); location.hash = "#/"; });
   $("#langBtn").addEventListener("click", () => { setLang(lang === "es" ? "en" : "es"); route(); });
+  $("#themeBtn").addEventListener("click", () => {
+    const th = document.documentElement.dataset.theme === "tech" ? "calm" : "tech";
+    document.documentElement.dataset.theme = th; ls.set("fm-theme", th); renderNav(parseRoute().view);
+  });
 }
 
 /* =========================================================

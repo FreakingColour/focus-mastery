@@ -94,6 +94,8 @@ export const STRINGS = {
     navBuddies: "Buddies",
     langSwitch: "EN",
     langSwitchLabel: "Switch to English",
+    themeToTech: "Cambiar al tema oscuro tecnológico",
+    themeToCalm: "Cambiar al tema claro y tranquilo",
 
     // configuración
     setupTitle: "Falta conectar la base de datos",
@@ -409,6 +411,8 @@ export const STRINGS = {
     navBuddies: "Buddies",
     langSwitch: "ES",
     langSwitchLabel: "Cambiar a español",
+    themeToTech: "Switch to the dark tech theme",
+    themeToCalm: "Switch to the calm light theme",
 
     setupTitle: "The database isn't connected yet",
     setupBody: "Open <code>config.js</code> and paste your Supabase project's <b>Project URL</b> and <b>publishable key</b>. The steps are in <code>README.md</code>.",
