@@ -1,6 +1,6 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=12";
-import { STRINGS } from "./i18n.js?v=12";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js?v=13";
+import { STRINGS } from "./i18n.js?v=13";
 
 /* =========================================================
    Idioma
@@ -982,11 +982,32 @@ const COLS = ["todo", "doing", "done"];
 const colLabel = c => ({ todo: t("colTodo"), doing: t("colDoing"), done: t("colDone") }[c]);
 async function viewBoard(rt) {
   app.innerHTML = `<p class="empty">${t("loadingBoard")}</p>`;
-  const { data, error } = await sb.from("tasks").select("*").order("created_at");
+  const [{ data, error }, td] = await Promise.all([
+    sb.from("tasks").select("*").order("created_at"),
+    sb.from("todos").select("*").order("created_at"),
+  ]);
   if (!alive(rt)) return;
   if (failed(error, t("errBoard"))) return;
   S.tasks = data || [];
+  S.todos = td.error ? null : (td.data || []);
+  if (td.error) console.error(td.error);
+  const tab = ls.get("fm-boardtab") === "todos" ? "todos" : "board";
   app.innerHTML = `
+  <div class="seg" id="bTabs" role="group" aria-label="${t("navBoard")}" style="justify-self:start">
+    <button type="button" data-tab="board" aria-pressed="${tab === "board"}">${t("tabBoard")}</button>
+    <button type="button" data-tab="todos" aria-pressed="${tab === "todos"}">${t("tabTodos")} <span class="num" id="todoCount"></span></button>
+  </div>
+  <section id="todosTab" ${tab === "todos" ? "" : "hidden"}>
+    <div class="panel">
+      <form class="add" id="tdForm">
+        <input type="text" id="tdText" placeholder="${t("todoPh")}" maxlength="300" aria-label="${t("todoPh")}">
+        <button class="btn primary">${t("add")}</button>
+      </form>
+      <p class="hint" style="margin-top:10px">${t("todosHint")}</p>
+      <div id="tdList" style="margin-top:14px"></div>
+    </div>
+  </section>
+  <section id="boardTab" style="display:grid;gap:20px" ${tab === "board" ? "" : "hidden"}>
   <div class="panel">
     <form class="add" id="kForm">
       <input type="text" id="kTitle" placeholder="${t("newTask")}" maxlength="200" aria-label="${t("taskTitle")}">
@@ -996,7 +1017,23 @@ async function viewBoard(rt) {
     </form>
     <p class="privnote" style="margin-top:10px">${t("boardPrivate")}</p>
   </div>
-  <div class="board" id="board">${COLS.map(c => `<div class="col" data-col="${c}"><h3>${colLabel(c)} <span class="num" data-count></span></h3></div>`).join("")}</div>`;
+  <div class="board" id="board">${COLS.map(c => `<div class="col" data-col="${c}"><h3>${colLabel(c)} <span class="num" data-count></span></h3></div>`).join("")}</div>
+  </section>`;
+  $("#bTabs").addEventListener("click", e => {
+    const b = e.target.closest("[data-tab]"); if (!b) return;
+    const k = b.dataset.tab; ls.set("fm-boardtab", k);
+    $("#bTabs").querySelectorAll("[data-tab]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    $("#boardTab").hidden = k !== "board"; $("#todosTab").hidden = k !== "todos";
+    if (k === "todos") $("#tdText")?.focus();
+  });
+  $("#tdForm").addEventListener("submit", async e => {
+    e.preventDefault(); if (!S.todos) return;
+    const text = $("#tdText").value.trim(); if (!text) return;
+    const { data, error } = await sb.from("todos").insert({ text }).select().single();
+    if (failed(error)) return;
+    S.todos.push(data); $("#tdText").value = ""; renderTodos();
+  });
+  renderTodos();
   $("#kForm").addEventListener("submit", async e => {
     e.preventDefault(); const title = $("#kTitle").value.trim(); if (!title) return;
     const row = { title, project: $("#kProj").value.trim() || null, estimate: Math.max(0, parseInt($("#kEst").value) || 0) };
@@ -1010,6 +1047,46 @@ async function viewBoard(rt) {
     col.addEventListener("drop", e => { e.preventDefault(); col.classList.remove("over"); moveTask(e.dataTransfer.getData("text/plain"), col.dataset.col); });
   });
   renderBoard();
+}
+function renderTodos() {
+  const box = $("#tdList"); if (!box) return;
+  if (!S.todos) { box.innerHTML = `<p class="notice alert">${t("needSqlTodos")}</p>`; $("#todoCount").textContent = ""; return; }
+  const open = S.todos.filter(x => !x.done), done = S.todos.filter(x => x.done);
+  $("#todoCount").textContent = open.length ? open.length : "";
+  const item = x => `<li class="todo ${x.done ? "done" : ""}" data-id="${x.id}">
+      <label><input type="checkbox" ${x.done ? "checked" : ""} data-check> <span>${esc(x.text)}</span></label>
+      ${x.done ? "" : `<button type="button" class="btn small" data-board title="${t("toBoard")}" aria-label="${t("toBoard")}">→ ${t("tabBoard")}</button>`}
+      <button type="button" class="btn ghost" data-del data-orig="✕" aria-label="${t("deleteTask")}">✕</button></li>`;
+  box.innerHTML = (open.length ? `<ul class="todos">${open.map(item).join("")}</ul>` : `<p class="empty">${t("todosEmpty")}</p>`) +
+    (done.length ? `<div class="row between" style="margin-top:16px"><span class="label">${t("doneCount", { n: done.length })}</span>
+      <button type="button" class="btn ghost small" id="tdClear">${t("clearDone")}</button></div>
+      <ul class="todos">${done.map(item).join("")}</ul>` : "");
+  box.querySelectorAll("li.todo").forEach(li => {
+    const id = li.dataset.id, x = S.todos.find(y => y.id === id);
+    li.querySelector("[data-check]").addEventListener("change", async e => {
+      x.done = e.target.checked; renderTodos();
+      const { error } = await sb.from("todos").update({ done: x.done }).eq("id", id);
+      if (failed(error)) { x.done = !x.done; renderTodos(); }
+    });
+    li.querySelector("[data-board]")?.addEventListener("click", async e => {
+      const btn = e.currentTarget; btn.disabled = true;
+      const { data, error } = await sb.from("tasks").insert({ title: x.text.slice(0, 200), estimate: 0 }).select().single();
+      if (failed(error)) { btn.disabled = false; return; }
+      S.tasks.push(data); renderBoard();
+      await sb.from("todos").delete().eq("id", id);
+      S.todos = S.todos.filter(y => y.id !== id); renderTodos(); toast(t("sentToBoard"));
+    });
+    const del = li.querySelector("[data-del]");
+    del.addEventListener("click", () => armDelete(del, t("confirmDelete"), async () => {
+      const { error } = await sb.from("todos").delete().eq("id", id);
+      if (!failed(error)) { S.todos = S.todos.filter(y => y.id !== id); renderTodos(); }
+    }));
+  });
+  $("#tdClear")?.addEventListener("click", async () => {
+    const ids = S.todos.filter(x => x.done).map(x => x.id);
+    const { error } = await sb.from("todos").delete().in("id", ids);
+    if (!failed(error)) { S.todos = S.todos.filter(x => !x.done); renderTodos(); }
+  });
 }
 async function moveTask(id, col) {
   const task = S.tasks.find(x => x.id === id); if (!task || task.col === col) return;

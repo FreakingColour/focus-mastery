@@ -13,6 +13,7 @@ Es una web estática (HTML + JS, sin instalar nada) con [Supabase](https://supab
 1. Crea una cuenta en supabase.com y un proyecto nuevo (región: Europa).
 2. Ve a **SQL Editor → New query**, pega todo `supabase/schema.sql` y pulsa **Run**.
 3. Haz lo mismo con `supabase/02_salas_y_revision.sql` (salas de foco, chat, revisión semanal, distracciones y toques).
+4. Y con `supabase/03_todos.sql` (pestaña To-dos del tablero).
 
 ### 2. Conecta la web
 1. En Supabase: **Project Settings → API**.
@@ -53,3 +54,4 @@ Sube el número `?v=` en `index.html` (styles.css y app.js) y en los `import` de
 - `config.js`: tus claves de Supabase
 - `supabase/schema.sql`: tablas y reglas de seguridad
 - `supabase/02_salas_y_revision.sql`: salas de foco con chat en tiempo real, revisión semanal, registro de distracciones y toques entre buddies
+- `supabase/03_todos.sql`: lista de to-dos rápidos del tablero
